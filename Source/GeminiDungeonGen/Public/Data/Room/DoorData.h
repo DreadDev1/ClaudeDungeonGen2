@@ -26,8 +26,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Frame Geometry")
 	TSoftObjectPtr<UStaticMesh> FrameTopMesh;
 	
-	// The footprint (in 100cm units) this door frame occupies along the wall boundary.
-	// Common door widths are 200cm (2 units).
+	// The footprint (in cell count) this door frame occupies along the wall boundary.
+	// Examples: 2 = standard door (2 cells = 200cm), 4 = double door (400cm), 8 = hangar door (800cm)
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Frame Geometry")
 	int32 FrameFootprintY = 2; 
 

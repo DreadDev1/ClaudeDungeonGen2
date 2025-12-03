@@ -497,105 +497,6 @@ void AMasterRoom::DrawDebugGrid()
 			}
 		}
 	}
-	
-	// 5. Draw Door Locations (Magenta) - Shows where doors will be placed
-	
-	for (const FFixedDoorLocation& DoorLoc : FixedDoorLocations)
-	{
-		if (!DoorLoc.DoorData) continue;
-		
-		// Get door footprint
-		int32 DoorFootprint = FMath::Max(1, FMath::RoundToInt(DoorLoc.DoorData->FrameFootprintY / CELL_SIZE));
-		
-		// Get cells for this edge
-		TArray<FIntPoint> EdgeCells = GetCellsForEdge(DoorLoc.WallEdge);
-		
-		// Draw boxes for each cell the door occupies
-		for (int32 i = 0; i < DoorFootprint && (DoorLoc.StartCell + i) < EdgeCells.Num(); ++i)
-		{
-			int32 CellIndex = DoorLoc.StartCell + i;
-			if (CellIndex >= 0 && CellIndex < EdgeCells.Num())
-			{
-				FIntPoint Cell = EdgeCells[CellIndex];
-				
-				// Center of the cell
-				FVector Center = ActorLocation + FVector(
-					(Cell.X + 0.5f) * CELL_SIZE,
-					(Cell.Y + 0.5f) * CELL_SIZE,
-					60.0f // Higher than walls for visibility
-				);
-				
-				// Size of the box (half extent)
-				FVector Extent(CELL_SIZE / 2.3f, CELL_SIZE / 2.3f, 30.0f);
-				
-				// Magenta color for doors
-				DrawDebugBox(World, Center, Extent, FQuat::Identity, FColor::Magenta, false, 5.0f, 0, 5.0f);
-			}
-		}
-	}
-	
-	// 6. Draw Wall Modules (Yellow) - Shows where wall segments are placed
-	
-	if (RoomData && RoomData->WallStyleData)
-	{
-		UWallData* WallData = RoomData->WallStyleData.LoadSynchronous();
-		if (WallData && WallData->AvailableWallModules.Num() > 0)
-		{
-			TArray<EWallEdge> Edges = {EWallEdge::North, EWallEdge::South, EWallEdge::East, EWallEdge::West};
-			
-			for (EWallEdge Edge : Edges)
-			{
-				TArray<FIntPoint> EdgeCells = GetCellsForEdge(Edge);
-				if (EdgeCells.Num() == 0) continue;
-				
-				// Mark door-occupied cells
-				TArray<bool> CellOccupied;
-				CellOccupied.SetNum(EdgeCells.Num());
-				for (int32 i = 0; i < EdgeCells.Num(); ++i)
-				{
-					CellOccupied[i] = false;
-				}
-				
-				for (const FFixedDoorLocation& DoorLoc : FixedDoorLocations)
-				{
-					if (DoorLoc.WallEdge != Edge || !DoorLoc.DoorData) continue;
-					
-					int32 DoorFootprint = FMath::Max(1, FMath::RoundToInt(DoorLoc.DoorData->FrameFootprintY / CELL_SIZE));
-					
-					for (int32 i = 0; i < DoorFootprint && (DoorLoc.StartCell + i) < EdgeCells.Num(); ++i)
-					{
-						int32 CellIndex = DoorLoc.StartCell + i;
-						if (CellIndex >= 0 && CellIndex < CellOccupied.Num())
-						{
-							CellOccupied[CellIndex] = true;
-						}
-					}
-				}
-				
-				// Draw wall segments (non-door cells)
-				for (int32 i = 0; i < CellOccupied.Num(); ++i)
-				{
-					if (!CellOccupied[i] && i < EdgeCells.Num())
-					{
-						FIntPoint Cell = EdgeCells[i];
-						
-						// Center of the cell
-						FVector Center = ActorLocation + FVector(
-							(Cell.X + 0.5f) * CELL_SIZE,
-							(Cell.Y + 0.5f) * CELL_SIZE,
-							50.0f // Between doors and forced empty
-						);
-						
-						// Size of the box (half extent)
-						FVector Extent(CELL_SIZE / 2.4f, CELL_SIZE / 2.4f, 28.0f);
-						
-						// Yellow color for walls
-						DrawDebugBox(World, Center, Extent, FQuat::Identity, FColor::Yellow, false, 5.0f, 0, 4.0f);
-					}
-				}
-			}
-		}
-	}
 }
 
 // --- Component Management ---
@@ -846,7 +747,8 @@ void AMasterRoom::GenerateWallsAndDoors()
 			if (DoorLoc.WallEdge != Edge || !DoorLoc.DoorData) continue;
 
 			// Get door footprint (how many cells it occupies)
-			int32 DoorFootprint = FMath::Max(1, FMath::RoundToInt(DoorLoc.DoorData->FrameFootprintY / CELL_SIZE));
+			// FrameFootprintY is already in cell count (e.g., 2 = 2 cells)
+			int32 DoorFootprint = FMath::Max(1, DoorLoc.DoorData->FrameFootprintY);
 			
 			// Mark cells as occupied by this door
 			for (int32 i = 0; i < DoorFootprint && (DoorLoc.StartCell + i) < EdgeCells.Num(); ++i)
