@@ -22,15 +22,16 @@ public:
 	// For simplicity, we'll use a version of FWallModule structure here for the frame meshes.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Frame Geometry")
 	TSoftObjectPtr<UStaticMesh> FrameSideMesh;
-	
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Frame Geometry")
-	TSoftObjectPtr<UStaticMesh> FrameTopMesh;
-	
+		
 	// The footprint (in cell count) this door frame occupies along the wall boundary.
 	// Examples: 2 = standard door (2 cells = 200cm), 4 = double door (400cm), 8 = hangar door (800cm)
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Frame Geometry")
-	int32 FrameFootprintY = 2; 
-
+	int32 FrameFootprintY = 2;
+	
+	// NEW: Designer-editable rotation offset to correct for mesh import orientation issues.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Frame Geometry")
+	FRotator FrameRotationOffset = FRotator::ZeroRotator;
+	
 	// --- Functional Door Actor ---
 
 	// The actual Blueprint Class of the Door Actor (e.g., an actor that handles opening/closing/replication)

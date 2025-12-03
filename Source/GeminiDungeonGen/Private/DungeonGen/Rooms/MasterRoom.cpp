@@ -242,67 +242,65 @@ FRotator AMasterRoom::GetWallRotationForEdge(EWallEdge Edge) const
 
 FVector AMasterRoom::CalculateNorthSouthWallPosition(int32 X, int32 StartY, float WallMeshLength, bool bIsNorthWall) const
 {
-	// North/South walls extend along Y-axis
 	FVector BasePosition = GetActorLocation() + FVector(
-		X * CELL_SIZE,
-		StartY * CELL_SIZE,
-		0.0f
-	);
-	
-	// Pivot is at BottomBackCenter (0.5 along mesh length on Y-axis)
+			X * CELL_SIZE,
+			StartY * CELL_SIZE,
+			0.0f
+		);
 	float HalfLength = WallMeshLength / 2.0f;
-	
 	FVector WallPivotOffset;
-	if (bIsNorthWall)  // X = Max, faces -X (South, into room)
+
+	if (bIsNorthWall)  // North wall: X = Max (+X direction)
 	{
+		// Total offset: +1.5 * CELL_SIZE (snaps to outer edge X = GridSize.X)
 		WallPivotOffset = FVector(
-			-CELL_SIZE / 2.0f,  // Move half-cell toward room interior (-X)
-			HalfLength,         // Center along Y-axis
+			CELL_SIZE + (CELL_SIZE / 2.0f),
+			HalfLength,
 			0.0f
 		);
 	}
-	else  // South wall: X = 0, faces +X (North, into room)
+	else  // South wall: X = 0 (-X direction)
 	{
+		// Total offset: -0.5 * CELL_SIZE (snaps to outer edge X = -1)
 		WallPivotOffset = FVector(
-			CELL_SIZE / 2.0f,   // Move half-cell toward room interior (+X)
-			HalfLength,         // Center along Y-axis
+			-CELL_SIZE / 2.0f,
+			HalfLength,
 			0.0f
 		);
 	}
-	
+
 	return BasePosition + WallPivotOffset;
 }
 
 FVector AMasterRoom::CalculateEastWestWallPosition(int32 StartX, int32 Y, float WallMeshLength, bool bIsEastWall) const
 {
-	// East/West walls extend along X-axis
 	FVector BasePosition = GetActorLocation() + FVector(
 		StartX * CELL_SIZE,
 		Y * CELL_SIZE,
 		0.0f
 	);
-	
-	// Pivot is at BottomBackCenter (0.5 along mesh length on X-axis)
 	float HalfLength = WallMeshLength / 2.0f;
-	
 	FVector WallPivotOffset;
-	if (bIsEastWall)  // Y = Max, faces -Y (West, into room)
+
+	if (bIsEastWall)  // East wall: Y = Max (+Y direction)
 	{
+		// Total offset: +1.5 * CELL_SIZE (snaps to outer edge Y = GridSize.Y)
 		WallPivotOffset = FVector(
-			HalfLength,          // Center along X-axis
-			-CELL_SIZE / 2.0f,   // Move half-cell toward room interior (-Y)
+			HalfLength,
+			CELL_SIZE + (CELL_SIZE / 2.0f),
 			0.0f
 		);
 	}
-	else  // West wall: Y = 0, faces +Y (East, into room)
+	else  // West wall: Y = 0 (-Y direction)
 	{
+		// Total offset: -0.5 * CELL_SIZE (snaps to outer edge Y = -1)
 		WallPivotOffset = FVector(
-			HalfLength,          // Center along X-axis
-			CELL_SIZE / 2.0f,    // Move half-cell toward room interior (+Y)
+			HalfLength,
+			-CELL_SIZE / 2.0f,
 			0.0f
 		);
 	}
-	
+
 	return BasePosition + WallPivotOffset;
 }
 
@@ -318,9 +316,7 @@ void AMasterRoom::FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 Segm
 	
 	FRotator WallRotation = GetWallRotationForEdge(Edge);
 	bool bIsNorthWall = (Edge == EWallEdge::North);
-	bool bIsSouthWall = (Edge == EWallEdge::South);
 	bool bIsEastWall = (Edge == EWallEdge::East);
-	bool bIsWestWall = (Edge == EWallEdge::West);
 	
 	// Greedy bin packing: largest module first
 	int32 RemainingCells = SegmentLength;
@@ -344,15 +340,15 @@ void AMasterRoom::FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 Segm
 		
 		if (!BestModule) break;  // No module fits remaining space
 		
-		// Load meshes
+		// Load base mesh
 		UStaticMesh* BaseMesh = BestModule->BaseMesh.LoadSynchronous();
 		if (!BaseMesh) break;
 		
-		// Calculate position based on wall edge
+		// Calculate position based on wall edge using the corrected helper functions
 		FVector Position;
 		float WallMeshLength = BestModule->Y_AxisFootprint * CELL_SIZE;
 		
-		if (bIsNorthWall || bIsSouthWall)
+		if (bIsNorthWall || Edge == EWallEdge::South)
 		{
 			// North/South walls: Use Y coordinate from EdgeCells
 			int32 X = EdgeCells[CurrentCell].X;
@@ -374,9 +370,6 @@ void AMasterRoom::FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 Segm
 			FTransform Transform(WallRotation, Position, FVector(1.0f));
 			HISM->AddInstance(Transform);
 		}
-		
-		// TODO: Stack Middle and Top meshes vertically (Phase 2)
-		// For now, we only place the Base mesh
 		
 		// Advance to next segment
 		RemainingCells -= BestModule->Y_AxisFootprint;
@@ -719,21 +712,17 @@ void AMasterRoom::GenerateWallsAndDoors()
 	if (!RoomData) return;
 
 	UWallData* WallData = RoomData->WallStyleData.LoadSynchronous();
-	if (!WallData || WallData->AvailableWallModules.Num() == 0) return;
+	if (!WallData) return;
 
 	FRandomStream RandomStream(GenerationSeed);
-	const FIntPoint GridSize = RoomData->GridSize;
 
-	// Process each wall edge independently
 	TArray<EWallEdge> Edges = {EWallEdge::North, EWallEdge::South, EWallEdge::East, EWallEdge::West};
 	
 	for (EWallEdge Edge : Edges)
 	{
-		// Step 1: Get all cells along this edge
 		TArray<FIntPoint> EdgeCells = GetCellsForEdge(Edge);
 		if (EdgeCells.Num() == 0) continue;
 
-		// Step 2: Mark cells occupied by doors
 		TArray<bool> CellOccupied;
 		CellOccupied.SetNum(EdgeCells.Num());
 		for (int32 i = 0; i < EdgeCells.Num(); ++i)
@@ -741,16 +730,54 @@ void AMasterRoom::GenerateWallsAndDoors()
 			CellOccupied[i] = false;
 		}
 
-		// Check for doors on this edge
+		// --- PASS 1: Mark Door Cells and Place ONLY Side Frames ---
 		for (const FFixedDoorLocation& DoorLoc : FixedDoorLocations)
 		{
 			if (DoorLoc.WallEdge != Edge || !DoorLoc.DoorData) continue;
 
-			// Get door footprint (how many cells it occupies)
-			// FrameFootprintY is already in cell count (e.g., 2 = 2 cells)
-			int32 DoorFootprint = FMath::Max(1, DoorLoc.DoorData->FrameFootprintY);
+			UDoorData* DoorData = DoorLoc.DoorData;
+			int32 DoorFootprint = FMath::Max(1, DoorData->FrameFootprintY);
 			
-			// Mark cells as occupied by this door
+			// Load door frame side mesh only
+			UStaticMesh* FrameSideMesh = DoorData->FrameSideMesh.LoadSynchronous();
+			
+			FRotator WallRotation = GetWallRotationForEdge(Edge);
+			// NOTE: If using the designer-editable offset (from previous suggestion), apply it here:
+			// FRotator FinalRotation = WallRotation + DoorData->FrameRotationOffset;
+			FRotator FinalRotation = WallRotation; 
+
+			bool bIsNorthWall = (Edge == EWallEdge::North);
+			bool bIsEastWall = (Edge == EWallEdge::East);
+			
+			// --- Placement of Door Frame Meshes ---
+			if (FrameSideMesh)
+			{
+				UHierarchicalInstancedStaticMeshComponent* HISM_Side = GetOrCreateHISM(FrameSideMesh);
+				if (HISM_Side)
+				{
+					// OLD: FRotator FinalRotation = WallRotation; 
+					// NEW: Apply the standard wall rotation AND the designer's correction offset
+					FRotator DoorRotation = WallRotation + DoorData->FrameRotationOffset; // <<-- THIS IS THE CHANGE
+
+					// 1. Left/Start Pillar
+					FVector StartPos = (bIsNorthWall || Edge == EWallEdge::South) 
+						? CalculateNorthSouthWallPosition(EdgeCells[DoorLoc.StartCell].X, EdgeCells[DoorLoc.StartCell].Y, CELL_SIZE, bIsNorthWall)
+						: CalculateEastWestWallPosition(EdgeCells[DoorLoc.StartCell].X, EdgeCells[DoorLoc.StartCell].Y, CELL_SIZE, bIsEastWall);
+					
+					HISM_Side->AddInstance(FTransform(DoorRotation, StartPos, FVector(1.0f))); // Use FinalRotation
+					
+					// 2. Right/End Pillar
+					int32 EndCellIndex = FMath::Min(DoorLoc.StartCell + DoorFootprint - 1, EdgeCells.Num() - 1);
+					
+					FVector EndPos = (bIsNorthWall || Edge == EWallEdge::South) 
+						? CalculateNorthSouthWallPosition(EdgeCells[EndCellIndex].X, EdgeCells[EndCellIndex].Y, CELL_SIZE, bIsNorthWall)
+						: CalculateEastWestWallPosition(EdgeCells[EndCellIndex].X, EdgeCells[EndCellIndex].Y, CELL_SIZE, bIsEastWall);
+						
+					HISM_Side->AddInstance(FTransform(DoorRotation, EndPos, FVector(1.0f))); // Use FinalRotation
+				}
+			}
+			
+			// Mark the cells as occupied by this door (essential for wall filling logic)
 			for (int32 i = 0; i < DoorFootprint && (DoorLoc.StartCell + i) < EdgeCells.Num(); ++i)
 			{
 				int32 CellIndex = DoorLoc.StartCell + i;
@@ -759,18 +786,17 @@ void AMasterRoom::GenerateWallsAndDoors()
 					CellOccupied[CellIndex] = true;
 				}
 			}
-
-			// TODO: Actually place the door actor here (Phase 2)
-			// For now, we just mark the cells as occupied
+			
+			// TODO: Add logic here to spawn the ADoorway actor using DoorData->DoorwayClass
 		}
 
-		// Step 3: Find continuous wall segments (non-door cells)
+		// --- PASS 2: Find continuous wall segments (non-door cells) and fill them ---
 		int32 SegmentStart = -1;
 		for (int32 i = 0; i < CellOccupied.Num(); ++i)
 		{
-			if (!CellOccupied[i])
+            // ... (Wall filling logic remains the same) ...
+            if (!CellOccupied[i])
 			{
-				// Start of a new segment
 				if (SegmentStart == -1)
 				{
 					SegmentStart = i;
@@ -778,7 +804,6 @@ void AMasterRoom::GenerateWallsAndDoors()
 			}
 			else
 			{
-				// End of a segment (door found)
 				if (SegmentStart != -1)
 				{
 					int32 SegmentLength = i - SegmentStart;
