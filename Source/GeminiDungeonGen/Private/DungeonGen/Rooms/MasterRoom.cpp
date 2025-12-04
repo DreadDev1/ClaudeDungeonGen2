@@ -378,8 +378,8 @@ FVector AMasterRoom::CalculateDoorPosition(EWallEdge Edge, int32 StartCell, floa
 			
 			BasePosition += FVector(X * CELL_SIZE, Y * CELL_SIZE, 0.0f);
 			DoorPivotOffset = FVector(
-				CELL_SIZE / 2.0f,  // Center on cell X (depth positioning)
-				0.0f,              // NO offset - door mesh is centered, Y position is exact
+				CELL_SIZE / 2.0f,  // Center on cell X
+				CELL_SIZE / 2.0f,  // Center on cell Y (pillar position)
 				0.0f
 			);
 			break;
@@ -393,8 +393,8 @@ FVector AMasterRoom::CalculateDoorPosition(EWallEdge Edge, int32 StartCell, floa
 			
 			BasePosition += FVector(X * CELL_SIZE, Y * CELL_SIZE, 0.0f);
 			DoorPivotOffset = FVector(
-				CELL_SIZE / 2.0f,  // Center on cell X (depth positioning)
-				0.0f,              // NO offset - door mesh is centered, Y position is exact
+				CELL_SIZE / 2.0f,  // Center on cell X
+				CELL_SIZE / 2.0f,  // Center on cell Y (pillar position)
 				0.0f
 			);
 			break;
@@ -408,8 +408,8 @@ FVector AMasterRoom::CalculateDoorPosition(EWallEdge Edge, int32 StartCell, floa
 			
 			BasePosition += FVector(X * CELL_SIZE, Y * CELL_SIZE, 0.0f);
 			DoorPivotOffset = FVector(
-				0.0f,              // NO offset - door mesh is centered, X position is exact
-				CELL_SIZE / 2.0f,  // Center on cell Y (depth positioning)
+				CELL_SIZE / 2.0f,  // Center on cell X (pillar position)
+				CELL_SIZE / 2.0f,  // Center on cell Y
 				0.0f
 			);
 			break;
@@ -423,8 +423,8 @@ FVector AMasterRoom::CalculateDoorPosition(EWallEdge Edge, int32 StartCell, floa
 			
 			BasePosition += FVector(X * CELL_SIZE, Y * CELL_SIZE, 0.0f);
 			DoorPivotOffset = FVector(
-				0.0f,              // NO offset - door mesh is centered, X position is exact
-				CELL_SIZE / 2.0f,  // Center on cell Y (depth positioning)
+				CELL_SIZE / 2.0f,  // Center on cell X (pillar position)
+				CELL_SIZE / 2.0f,  // Center on cell Y
 				0.0f
 			);
 			break;
