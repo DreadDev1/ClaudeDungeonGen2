@@ -60,10 +60,25 @@ public:
 	
 	UPROPERTY(EditAnywhere, Category = "Generation|Designer Overrides|Doors|Position Offsets")
 	FVector DoorPositionOffset = FVector::ZeroVector;
+	
+	// --- Procedural Door Placement ---
+	
+	// Enable automatic placement of ONE door per edge (in valid gaps)
+	// Doors are size-appropriate and placed randomly in available space
+	// Designers can manually override by adding to FixedDoorLocations
+	UPROPERTY(EditAnywhere, Category = "Generation|Procedural Doors")
+	bool bEnableProceduralDoors = false;
 
 private:
 	// Internal grid array to track occupancy (used during runtime generation)
 	TArray<EGridCellType> InternalGridState;
+	
+	// Occupancy grid for tracking what's placed in each cell (walls, doors, etc.)
+	// Used during generation to prevent overlapping placement
+	TMap<FIntPoint, EGridCellType> OccupancyGrid;
+	
+	// Flag to prevent infinite recursion during procedural door placement
+	bool bIsPlacingProceduralDoors = false;
 	
 	// Map to hold and manage HISM components (one HISM per unique Static Mesh)
 	TMap<UStaticMesh*, UHierarchicalInstancedStaticMeshComponent*> MeshToHISMMap;
@@ -125,4 +140,28 @@ protected:
 	
 	// Fill a wall segment with wall modules using bin packing
 	void FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 SegmentLength, FRandomStream& Stream);
+	
+	// --- Procedural Door Placement ---
+	
+	// Automatically place doors in valid gaps using DoorStylePool
+	// Called after fixed doors are processed if bEnableProceduralDoors is true
+	void PlaceProceduralDoors(FRandomStream& Stream);
+	
+	// --- Door Variety Helper Functions (Hybrid System) ---
+	
+	// Select a random door from the RoomData's DoorStylePool using weighted selection
+	// Returns nullptr if pool is empty
+	UDoorData* SelectRandomDoorFromPool(FRandomStream& Stream) const;
+	
+	// Check if a door of given footprint can fit at the specified location
+	// Returns true if there's enough space and no overlap with existing doors
+	bool CanFitDoor(EWallEdge Edge, int32 StartCell, int32 Footprint) const;
+	
+	// Get the number of available consecutive cells on an edge (between existing doors)
+	// Useful for finding valid placement locations for procedural doors
+	int32 GetAvailableSpaceOnEdge(EWallEdge Edge, int32 StartCell) const;
+	
+	// Get all valid door placement locations on an edge (gaps between fixed doors)
+	// Returns array of {StartCell, MaxFootprint} pairs
+	TArray<TPair<int32, int32>> GetValidDoorLocations(EWallEdge Edge) const;
 };

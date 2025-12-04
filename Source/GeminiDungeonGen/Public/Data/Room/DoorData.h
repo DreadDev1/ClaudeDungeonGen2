@@ -1,4 +1,4 @@
-﻿ // Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 #pragma once
 
@@ -31,6 +31,15 @@ public:
 	// NEW: Designer-editable rotation offset to correct for mesh import orientation issues.
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Frame Geometry")
 	FRotator FrameRotationOffset = FRotator::ZeroRotator;
+	
+	// --- Door Variety Pool (Hybrid System) ---
+	
+	// Pool of door styles available in this door pack
+	// Each entry represents a different door variant (size, style, etc.)
+	// Used for procedural door placement with weighted random selection
+	// NOTE: Leave empty to use only the single door properties above (backwards compatible)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door Varieties")
+	TArray<UDoorData*> DoorStylePool;
 	
 	// --- Functional Door Actor ---
 

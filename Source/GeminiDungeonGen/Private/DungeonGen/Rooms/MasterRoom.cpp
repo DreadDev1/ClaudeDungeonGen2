@@ -845,6 +845,17 @@ void AMasterRoom::GenerateWallsAndDoors()
 	UWallData* WallData = RoomData->WallStyleData.LoadSynchronous();
 	if (!WallData) return;
 
+	// Clear OccupancyGrid for fresh generation
+	OccupancyGrid.Empty();
+	
+	// Clear procedural doors ONLY if this is NOT a regeneration call from PlaceProceduralDoors
+	// This prevents clearing the doors that were just placed
+	if (bEnableProceduralDoors && !bIsPlacingProceduralDoors)
+	{
+		FixedDoorLocations.Empty();
+		UE_LOG(LogTemp, Warning, TEXT("Cleared FixedDoorLocations (procedural mode enabled, initial call)"));
+	}
+
 	// === EXTENSIVE LOGGING START ===
 	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 	UE_LOG(LogTemp, Warning, TEXT("GenerateWallsAndDoors() STARTED"));
@@ -983,6 +994,10 @@ void AMasterRoom::GenerateWallsAndDoors()
 				if (CellIndex >= 0 && CellIndex < CellOccupied.Num())
 				{
 					CellOccupied[CellIndex] = true;
+					
+					// Also mark in OccupancyGrid for global tracking
+					const FIntPoint& CellPos = EdgeCells[CellIndex];
+					OccupancyGrid.Add(CellPos, EGridCellType::ECT_Doorway);
 				}
 			}
 			
@@ -1019,6 +1034,133 @@ void AMasterRoom::GenerateWallsAndDoors()
 			FillWallSegment(Edge, SegmentStart, SegmentLength, RandomStream);
 		}
 	}
+	
+	// --- Procedural Door Placement (if enabled) ---
+	if (bEnableProceduralDoors)
+	{
+		PlaceProceduralDoors(RandomStream);
+	}
+}
+
+void AMasterRoom::PlaceProceduralDoors(FRandomStream& Stream)
+{
+	if (!RoomData) return;
+	
+	// Prevent infinite recursion using member variable flag
+	if (bIsPlacingProceduralDoors)
+	{
+		return; // Already placing doors, don't recurse
+	}
+	
+	// Load the DoorData pack
+	UDoorData* DoorData = RoomData->DoorStyleData.LoadSynchronous();
+	if (!DoorData)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PlaceProceduralDoors: No DoorData available"));
+		return;
+	}
+	
+	// Set recursion guard
+	bIsPlacingProceduralDoors = true;
+	
+	// Log pool info (empty pool is OK - will use DoorData itself as fallback)
+	int32 PoolSize = DoorData->DoorStylePool.Num();
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("PROCEDURAL DOOR PLACEMENT - 1 Per Edge"));
+	UE_LOG(LogTemp, Warning, TEXT("Door Pool Size: %d %s"), PoolSize, 
+		(PoolSize == 0) ? TEXT("(using fallback - single door mode)") : TEXT(""));
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	
+	TArray<EWallEdge> Edges = {EWallEdge::North, EWallEdge::South, EWallEdge::East, EWallEdge::West};
+	int32 TotalDoorsPlaced = 0;
+	
+	for (EWallEdge Edge : Edges)
+	{
+		UE_LOG(LogTemp, Warning, TEXT(">>> Processing Edge %d <<<"), (int32)Edge);
+		
+		// Get all valid locations on this edge (gaps between fixed doors)
+		TArray<TPair<int32, int32>> ValidSpots = GetValidDoorLocations(Edge);
+		
+		if (ValidSpots.Num() == 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("  No valid gaps - skipping edge"));
+			continue;
+		}
+		
+		UE_LOG(LogTemp, Warning, TEXT("  Found %d valid gaps"), ValidSpots.Num());
+		
+		// Pick a random gap
+		int32 RandomGapIndex = Stream.RandRange(0, ValidSpots.Num() - 1);
+		const TPair<int32, int32>& SelectedGap = ValidSpots[RandomGapIndex];
+		
+		int32 GapStart = SelectedGap.Key;
+		int32 GapSize = SelectedGap.Value;
+		
+		UE_LOG(LogTemp, Warning, TEXT("  Selected gap #%d: StartCell=%d, Size=%d"), 
+			RandomGapIndex, GapStart, GapSize);
+		
+		// Select a size-appropriate door from pool
+		UDoorData* SelectedDoor = nullptr;
+		int32 Attempts = 0;
+		const int32 MaxAttempts = 10;
+		
+		while (Attempts < MaxAttempts && !SelectedDoor)
+		{
+			UDoorData* CandidateDoor = SelectRandomDoorFromPool(Stream);
+			if (CandidateDoor)
+			{
+				int32 DoorFootprint = FMath::Max(1, CandidateDoor->FrameFootprintY);
+				
+				// Check if door fits in gap
+				if (DoorFootprint <= GapSize)
+				{
+					SelectedDoor = CandidateDoor;
+					UE_LOG(LogTemp, Warning, TEXT("    Selected door with footprint %d"), DoorFootprint);
+					break;
+				}
+			}
+			Attempts++;
+		}
+		
+		if (!SelectedDoor)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("    FAILED: Could not find door that fits after %d attempts"), MaxAttempts);
+			continue;
+		}
+		
+		// Calculate random placement position within gap
+		int32 DoorFootprint = FMath::Max(1, SelectedDoor->FrameFootprintY);
+		int32 MaxOffset = GapSize - DoorFootprint;
+		int32 RandomOffset = (MaxOffset > 0) ? Stream.RandRange(0, MaxOffset) : 0;
+		int32 PlacementCell = GapStart + RandomOffset;
+		
+		// Add to FixedDoorLocations array
+		FFixedDoorLocation NewDoor;
+		NewDoor.WallEdge = Edge;
+		NewDoor.StartCell = PlacementCell;
+		NewDoor.DoorData = SelectedDoor;
+		
+		FixedDoorLocations.Add(NewDoor);
+		TotalDoorsPlaced++;
+		
+		UE_LOG(LogTemp, Warning, TEXT("    PLACED door at cell %d (footprint %d)"), PlacementCell, DoorFootprint);
+	}
+	
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("PROCEDURAL PLACEMENT COMPLETE"));
+	UE_LOG(LogTemp, Warning, TEXT("Total Doors Placed: %d"), TotalDoorsPlaced);
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	
+	// If we placed any doors, regenerate walls to account for them
+	// Keep the recursion guard active during regeneration!
+	if (TotalDoorsPlaced > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Regenerating walls with new procedural doors..."));
+		GenerateWallsAndDoors();
+	}
+	
+	// NOW clear recursion guard AFTER regeneration is complete
+	bIsPlacingProceduralDoors = false;
 }
 
 void AMasterRoom::ExecuteForcedPlacements(FRandomStream& Stream)
@@ -1118,6 +1260,208 @@ void AMasterRoom::ExecuteForcedPlacements(FRandomStream& Stream)
 			}
 		}
 	}
+}
+
+// ==================================================================================
+// DOOR VARIETY HELPER FUNCTIONS (Hybrid System)
+// ==================================================================================
+
+UDoorData* AMasterRoom::SelectRandomDoorFromPool(FRandomStream& Stream) const
+{
+	if (!RoomData) return nullptr;
+	
+	// Load the DoorData asset
+	UDoorData* DoorData = RoomData->DoorStyleData.LoadSynchronous();
+	if (!DoorData || DoorData->DoorStylePool.Num() == 0)
+	{
+		// No pool available, return the DoorData itself as fallback (single door mode)
+		return DoorData;
+	}
+	
+	// Calculate total weight
+	float TotalWeight = 0.0f;
+	for (UDoorData* PoolDoor : DoorData->DoorStylePool)
+	{
+		if (PoolDoor)
+		{
+			TotalWeight += PoolDoor->PlacementWeight;
+		}
+	}
+	
+	if (TotalWeight <= 0.0f)
+	{
+		// If all weights are 0, pick randomly
+		return DoorData->DoorStylePool[Stream.RandRange(0, DoorData->DoorStylePool.Num() - 1)];
+	}
+	
+	// Weighted random selection
+	float RandomValue = Stream.FRandRange(0.0f, TotalWeight);
+	float CurrentWeight = 0.0f;
+	
+	for (UDoorData* PoolDoor : DoorData->DoorStylePool)
+	{
+		if (PoolDoor)
+		{
+			CurrentWeight += PoolDoor->PlacementWeight;
+			if (RandomValue <= CurrentWeight)
+			{
+				return PoolDoor;
+			}
+		}
+	}
+	
+	// Fallback (should never reach here)
+	return DoorData->DoorStylePool[0];
+}
+
+bool AMasterRoom::CanFitDoor(EWallEdge Edge, int32 StartCell, int32 Footprint) const
+{
+	if (!RoomData) return false;
+	
+	const FIntPoint GridSize = RoomData->GridSize;
+	
+	// Get the edge size
+	int32 EdgeSize = (Edge == EWallEdge::North || Edge == EWallEdge::South) 
+		? GridSize.Y 
+		: GridSize.X;
+	
+	// Check if door would go out of bounds
+	if (StartCell < 0 || StartCell + Footprint > EdgeSize)
+	{
+		return false;
+	}
+	
+	// Check for overlap with existing fixed doors
+	for (const FFixedDoorLocation& ExistingDoor : FixedDoorLocations)
+	{
+		if (ExistingDoor.WallEdge != Edge || !ExistingDoor.DoorData)
+		{
+			continue;
+		}
+		
+		int32 ExistingStart = ExistingDoor.StartCell;
+		int32 ExistingEnd = ExistingStart + FMath::Max(1, ExistingDoor.DoorData->FrameFootprintY);
+		
+		int32 NewStart = StartCell;
+		int32 NewEnd = StartCell + Footprint;
+		
+		// Check for overlap: [Start1, End1) overlaps [Start2, End2) if Start1 < End2 AND Start2 < End1
+		if (NewStart < ExistingEnd && ExistingStart < NewEnd)
+		{
+			return false; // Overlap detected
+		}
+	}
+	
+	// Check OccupancyGrid to ensure door doesn't overlap with walls or other objects
+	TArray<FIntPoint> EdgeCells = GetCellsForEdge(Edge);
+	for (int32 i = 0; i < Footprint && (StartCell + i) < EdgeCells.Num(); ++i)
+	{
+		const FIntPoint& CellPos = EdgeCells[StartCell + i];
+		
+		// Check if this cell is already occupied by something other than a door
+		if (OccupancyGrid.Contains(CellPos))
+		{
+			EGridCellType CellType = OccupancyGrid[CellPos];
+			if (CellType != EGridCellType::ECT_Doorway && CellType != EGridCellType::ECT_Empty)
+			{
+				return false; // Cell is occupied by wall or other object
+			}
+		}
+	}
+	
+	return true;
+}
+
+int32 AMasterRoom::GetAvailableSpaceOnEdge(EWallEdge Edge, int32 StartCell) const
+{
+	if (!RoomData) return 0;
+	
+	const FIntPoint GridSize = RoomData->GridSize;
+	
+	// Get the edge size
+	int32 EdgeSize = (Edge == EWallEdge::North || Edge == EWallEdge::South) 
+		? GridSize.Y 
+		: GridSize.X;
+	
+	// Find the next obstacle (existing door or edge end)
+	int32 AvailableSpace = EdgeSize - StartCell;
+	
+	for (const FFixedDoorLocation& ExistingDoor : FixedDoorLocations)
+	{
+		if (ExistingDoor.WallEdge != Edge || !ExistingDoor.DoorData)
+		{
+			continue;
+		}
+		
+		int32 ExistingStart = ExistingDoor.StartCell;
+		
+		// If there's a door after our start position, limit available space
+		if (ExistingStart > StartCell)
+		{
+			AvailableSpace = FMath::Min(AvailableSpace, ExistingStart - StartCell);
+		}
+	}
+	
+	return AvailableSpace;
+}
+
+TArray<TPair<int32, int32>> AMasterRoom::GetValidDoorLocations(EWallEdge Edge) const
+{
+	TArray<TPair<int32, int32>> ValidLocations;
+	
+	if (!RoomData) return ValidLocations;
+	
+	const FIntPoint GridSize = RoomData->GridSize;
+	
+	// Get the edge size
+	int32 EdgeSize = (Edge == EWallEdge::North || Edge == EWallEdge::South) 
+		? GridSize.Y 
+		: GridSize.X;
+	
+	// Collect all existing door ranges on this edge
+	TArray<TPair<int32, int32>> OccupiedRanges;
+	for (const FFixedDoorLocation& ExistingDoor : FixedDoorLocations)
+	{
+		if (ExistingDoor.WallEdge == Edge && ExistingDoor.DoorData)
+		{
+			int32 Start = ExistingDoor.StartCell;
+			int32 End = Start + FMath::Max(1, ExistingDoor.DoorData->FrameFootprintY);
+			OccupiedRanges.Add(TPair<int32, int32>(Start, End));
+		}
+	}
+	
+	// Sort by start position
+	OccupiedRanges.Sort([](const TPair<int32, int32>& A, const TPair<int32, int32>& B)
+	{
+		return A.Key < B.Key;
+	});
+	
+	// Find gaps between occupied ranges
+	int32 CurrentPos = 0;
+	
+	for (const TPair<int32, int32>& Range : OccupiedRanges)
+	{
+		int32 GapStart = CurrentPos;
+		int32 GapEnd = Range.Key;
+		
+		if (GapEnd > GapStart)
+		{
+			// Found a gap!
+			int32 GapSize = GapEnd - GapStart;
+			ValidLocations.Add(TPair<int32, int32>(GapStart, GapSize));
+		}
+		
+		CurrentPos = Range.Value;
+	}
+	
+	// Check for gap at the end
+	if (CurrentPos < EdgeSize)
+	{
+		int32 GapSize = EdgeSize - CurrentPos;
+		ValidLocations.Add(TPair<int32, int32>(CurrentPos, GapSize));
+	}
+	
+	return ValidLocations;
 }
 
 // Editor-only overrides for lifecycle management
