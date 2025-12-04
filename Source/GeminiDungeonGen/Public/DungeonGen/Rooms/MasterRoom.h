@@ -54,6 +54,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Generation|Designer Overrides|Walls")
 	TArray<FFixedDoorLocation> FixedDoorLocations;
 
+	// --- Door Position Offset Controls ---
+	// Global offset applied to all doors for fine-tuning alignment with floor edges
+	// Note: Wall offsets are now in WallData asset (per-wall-type configuration)
+	
+	UPROPERTY(EditAnywhere, Category = "Generation|Designer Overrides|Doors|Position Offsets")
+	FVector DoorPositionOffset = FVector::ZeroVector;
+
 private:
 	// Internal grid array to track occupancy (used during runtime generation)
 	TArray<EGridCellType> InternalGridState;
@@ -111,6 +118,10 @@ protected:
 	
 	// Calculate world position for a wall module on East/West edges
 	FVector CalculateEastWestWallPosition(int32 StartX, int32 Y, float WallMeshLength, bool bIsEastWall) const;
+	
+	// Calculate world position for a door (independent of wall positioning)
+	// Doors snap to floor edges using interior cells, not boundary cells
+	FVector CalculateDoorPosition(EWallEdge Edge, int32 StartCell, float DoorWidth) const;
 	
 	// Fill a wall segment with wall modules using bin packing
 	void FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 SegmentLength, FRandomStream& Stream);
