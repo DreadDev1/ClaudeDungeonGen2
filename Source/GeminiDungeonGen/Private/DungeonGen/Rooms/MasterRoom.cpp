@@ -7,6 +7,7 @@
 #include "Data/Room/FloorData.h"
 #include "Data/Room/RoomData.h"
 #include "Data/Room/WallData.h"
+#include "Engine/StaticMeshSocket.h"
 
 
 // Sets default values
@@ -1036,7 +1037,7 @@ void AMasterRoom::GenerateWallsAndDoors()
 					
 					// Also mark in OccupancyGrid for global tracking
 					const FIntPoint& CellPos = EdgeCells[CellIndex];
-					OccupancyGrid.Add(CellPos, EGridCellType::Door);
+					OccupancyGrid.Add(CellPos, EGridCellType::ECT_Doorway);
 					
 					UE_LOG(LogTemp, Warning, TEXT("    Marked cell %d as OCCUPIED (pos: %s)"), 
 						CellIndex, *CellPos.ToString());
@@ -1466,7 +1467,7 @@ bool AMasterRoom::CanFitDoor(EWallEdge Edge, int32 StartCell, int32 Footprint) c
 		if (OccupancyGrid.Contains(CellPos))
 		{
 			EGridCellType CellType = OccupancyGrid[CellPos];
-			if (CellType != EGridCellType::Door && CellType != EGridCellType::Empty)
+			if (CellType != EGridCellType::ECT_Doorway && CellType != EGridCellType::ECT_Empty)
 			{
 				return false; // Cell is occupied by wall or other object
 			}
@@ -1837,24 +1838,52 @@ bool AMasterRoom::GetSocketTransform(UStaticMesh* Mesh, FName SocketName, FVecto
 
 void AMasterRoom::SpawnCorners()
 {
-	if (!RoomData) return;
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("SpawnCorners() CALLED"));
+	
+	if (!RoomData)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SpawnCorners FAILED: RoomData is NULL!"));
+		return;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("RoomData valid: %s"), *RoomData->GetName());
 	
 	UWallData* WallData = RoomData->WallStyleData.LoadSynchronous();
-	if (!WallData || !WallData->DefaultCornerMesh.IsValid()) return;
+	if (!WallData)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SpawnCorners FAILED: WallData is NULL!"));
+		return;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("WallData valid: %s"), *WallData->GetName());
+	
+	// Attempt to load DefaultCornerMesh
+	// Note: TSoftObjectPtr::IsValid() can return false even when mesh is assigned
+	// So we skip the IsValid() check and directly attempt LoadSynchronous()
+	UE_LOG(LogTemp, Warning, TEXT("Attempting to load DefaultCornerMesh..."));
 	
 	UStaticMesh* CornerMesh = WallData->DefaultCornerMesh.LoadSynchronous();
-	if (!CornerMesh) return;
+	if (!CornerMesh)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SpawnCorners: No DefaultCornerMesh assigned (LoadSynchronous returned NULL) - skipping corners"));
+		return;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("Corner Mesh loaded: %s"), *CornerMesh->GetName());
 	
 	const FIntPoint GridSize = RoomData->GridSize;
 	const FVector ActorLocation = GetActorLocation();
 	
-	UE_LOG(LogTemp, Warning, TEXT("========================================"));
-	UE_LOG(LogTemp, Warning, TEXT("SPAWNING CORNER MESHES"));
-	UE_LOG(LogTemp, Warning, TEXT("Corner Mesh: %s"), *CornerMesh->GetName());
+	UE_LOG(LogTemp, Warning, TEXT("Grid Size: %d x %d"), GridSize.X, GridSize.Y);
+	UE_LOG(LogTemp, Warning, TEXT("Actor Location: %s"), *ActorLocation.ToString());
 	
 	// Get HISM for corners
 	UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreateHISM(CornerMesh);
-	if (!HISM) return;
+	if (!HISM)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SpawnCorners FAILED: GetOrCreateHISM returned NULL!"));
+		return;
+	}
+	UE_LOG(LogTemp, Warning, TEXT("HISM component created/retrieved: %s"), *HISM->GetName());
+	UE_LOG(LogTemp, Warning, TEXT("HISM instances BEFORE adding corners: %d"), HISM->GetInstanceCount());
 	
 	// Define the 4 corners with positions and rotations
 	struct FCornerInfo
@@ -1866,47 +1895,76 @@ void AMasterRoom::SpawnCorners()
 	
 	TArray<FCornerInfo> Corners;
 	
-	// Northwest Corner (0, GridSize.Y) - Facing southeast (135°)
-	Corners.Add({
-		ActorLocation + FVector(0.0f, GridSize.Y * CELL_SIZE, 0.0f),
-		FRotator(0.0f, 135.0f, 0.0f),
-		TEXT("NorthWest")
-	});
-	
-	// Northeast Corner (GridSize.X, GridSize.Y) - Facing southwest (225°)
-	Corners.Add({
-		ActorLocation + FVector(GridSize.X * CELL_SIZE, GridSize.Y * CELL_SIZE, 0.0f),
-		FRotator(0.0f, 225.0f, 0.0f),
-		TEXT("NorthEast")
-	});
-	
-	// Southwest Corner (0, 0) - Facing northeast (45°)
+	// SouthWest Corner (0, 0) - Bottom-left, starting point (clockwise)
 	Corners.Add({
 		ActorLocation + FVector(0.0f, 0.0f, 0.0f),
-		FRotator(0.0f, 45.0f, 0.0f),
+		FRotator(0.0f, 0.0f, 0.0f),
 		TEXT("SouthWest")
 	});
 	
-	// Southeast Corner (GridSize.X, 0) - Facing northwest (315°)
+	// NorthWest Corner (0, GridSize.Y) - Top-left
+	Corners.Add({
+		ActorLocation + FVector(0.0f, GridSize.Y * CELL_SIZE, 0.0f),
+		FRotator(0.0f, 0.0f, 0.0f),
+		TEXT("NorthWest")
+	});
+	
+	// NorthEast Corner (GridSize.X, GridSize.Y) - Top-right
+	Corners.Add({
+		ActorLocation + FVector(GridSize.X * CELL_SIZE, GridSize.Y * CELL_SIZE, 0.0f),
+		FRotator(0.0f, 0.0f, 0.0f),
+		TEXT("NorthEast")
+	});
+	
+	// SouthEast Corner (GridSize.X, 0) - Bottom-right
 	Corners.Add({
 		ActorLocation + FVector(GridSize.X * CELL_SIZE, 0.0f, 0.0f),
-		FRotator(0.0f, 315.0f, 0.0f),
+		FRotator(0.0f, 0.0f, 0.0f),
 		TEXT("SouthEast")
 	});
 	
-	// Spawn all 4 corners
+	UE_LOG(LogTemp, Warning, TEXT("Corner positions calculated: %d corners"), Corners.Num());
+	UE_LOG(LogTemp, Warning, TEXT("Per-corner offsets:"));
+	UE_LOG(LogTemp, Warning, TEXT("  SouthWest: %s"), *WallData->SouthWestCornerOffset.ToString());
+	UE_LOG(LogTemp, Warning, TEXT("  NorthWest: %s"), *WallData->NorthWestCornerOffset.ToString());
+	UE_LOG(LogTemp, Warning, TEXT("  NorthEast: %s"), *WallData->NorthEastCornerOffset.ToString());
+	UE_LOG(LogTemp, Warning, TEXT("  SouthEast: %s"), *WallData->SouthEastCornerOffset.ToString());
+	
+	// Spawn all 4 corners with individual offsets
 	int32 CornersSpawned = 0;
-	for (const FCornerInfo& Corner : Corners)
+	
+	// Array of offsets matching corner order
+	TArray<FVector> CornerOffsets = {
+		WallData->SouthWestCornerOffset,
+		WallData->SouthEastCornerOffset,
+		WallData->NorthEastCornerOffset,
+		WallData->NorthWestCornerOffset,		
+	};
+	
+	for (int32 i = 0; i < Corners.Num(); i++)
 	{
-		FTransform CornerTransform(Corner.Rotation, Corner.Position, FVector(1.0f));
-		HISM->AddInstance(CornerTransform);
+		const FCornerInfo& Corner = Corners[i];
+		const FVector& Offset = CornerOffsets[i];
+		
+		// Apply per-corner offset from WallData
+		FVector FinalPosition = Corner.Position + Offset;
+		
+		FTransform CornerTransform(Corner.Rotation, FinalPosition, FVector(1.0f));
+		
+		UE_LOG(LogTemp, Warning, TEXT("  Adding %s corner..."), *Corner.Name);
+		UE_LOG(LogTemp, Warning, TEXT("    Base Position: %s"), *Corner.Position.ToString());
+		UE_LOG(LogTemp, Warning, TEXT("    Applied Offset: %s"), *Offset.ToString());
+		UE_LOG(LogTemp, Warning, TEXT("    Final Position: %s"), *FinalPosition.ToString());
+		UE_LOG(LogTemp, Warning, TEXT("    Rotation: %.1f°"), Corner.Rotation.Yaw);
+		
+		int32 InstanceIndex = HISM->AddInstance(CornerTransform);
 		CornersSpawned++;
 		
-		UE_LOG(LogTemp, Warning, TEXT("  %s corner at: %s (Rotation: %.1f°)"), 
-			*Corner.Name, *Corner.Position.ToString(), Corner.Rotation.Yaw);
+		UE_LOG(LogTemp, Warning, TEXT("    Instance added at index: %d"), InstanceIndex);
 	}
 	
 	UE_LOG(LogTemp, Warning, TEXT("Corners spawned: %d"), CornersSpawned);
+	UE_LOG(LogTemp, Warning, TEXT("HISM instances AFTER adding corners: %d"), HISM->GetInstanceCount());
 	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 }
 
