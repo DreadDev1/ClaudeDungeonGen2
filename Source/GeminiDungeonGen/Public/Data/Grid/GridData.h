@@ -96,6 +96,30 @@ struct FWallModule
 	float PlacementWeight = 1.0f;
 };
 
+// --- Forced Wall Placement (Designer Override System) ---
+
+// Struct for placing specific wall modules at exact locations
+// Allows designers to override random wall generation with precise control
+USTRUCT(BlueprintType)
+struct FForcedWallPlacement
+{
+	GENERATED_BODY()
+
+	// Which edge of the room to place this wall on
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wall Placement")
+	EWallEdge Edge = EWallEdge::North;
+
+	// The starting cell index along this edge (0-based)
+	// For North/South edges: index along Y-axis (0 to GridSize.Y-1)
+	// For East/West edges: index along X-axis (0 to GridSize.X-1)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wall Placement")
+	int32 StartCell = 0;
+
+	// The exact wall module to place (includes footprint, meshes, and all properties)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wall Placement")
+	FWallModule WallModule;
+};
+
 // --- Forced Empty Region (Designer Override System) ---
 
 // Struct for defining rectangular regions that should remain empty (no floor tiles)

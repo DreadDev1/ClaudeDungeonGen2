@@ -7,6 +7,7 @@
 #include "Data/Room/FloorData.h"
 #include "Data/Room/RoomData.h"
 #include "Data/Room/WallData.h"
+#include "Data/Grid/GridData.h"
 #include "Engine/StaticMeshSocket.h"
 
 
@@ -911,6 +912,10 @@ void AMasterRoom::GenerateWallsAndDoors()
 			FixedDoorLocations.Num());
 	}
 
+	// --- Forced Wall Placement (Designer Override) ---
+	// Place forced walls before random generation so they take priority
+	PlaceForcedWalls();
+
 	TArray<EWallEdge> Edges = {EWallEdge::North, EWallEdge::South, EWallEdge::East, EWallEdge::West};
 	
 	for (EWallEdge Edge : Edges)
@@ -922,7 +927,8 @@ void AMasterRoom::GenerateWallsAndDoors()
 		CellOccupied.SetNum(EdgeCells.Num());
 		for (int32 i = 0; i < EdgeCells.Num(); ++i)
 		{
-			CellOccupied[i] = false;
+			// Check if cell is already occupied (by forced walls or other elements)
+			CellOccupied[i] = OccupancyGrid.Contains(EdgeCells[i]);
 		}
 
 		// --- PASS 1: Mark Door Cells and Place ONLY Side Frames ---
@@ -1365,6 +1371,150 @@ void AMasterRoom::ExecuteForcedPlacements(FRandomStream& Stream)
 			}
 		}
 	}
+}
+
+// ==================================================================================
+// FORCED WALL PLACEMENT (Designer Override System)
+// ==================================================================================
+
+void AMasterRoom::PlaceForcedWalls()
+{
+	if (ForcedWalls.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("No forced walls to place"));
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("PLACING FORCED WALLS"));
+	UE_LOG(LogTemp, Warning, TEXT("Total forced walls: %d"), ForcedWalls.Num());
+
+	int32 WallsPlaced = 0;
+	int32 WallsSkipped = 0;
+
+	for (int32 i = 0; i < ForcedWalls.Num(); i++)
+	{
+		const FForcedWallPlacement& ForcedWall = ForcedWalls[i];
+		const FWallModule& Module = ForcedWall.WallModule;
+
+		UE_LOG(LogTemp, Warning, TEXT("  Forced Wall [%d]: Edge=%d, StartCell=%d, Footprint=%d"),
+			i, (int32)ForcedWall.Edge, ForcedWall.StartCell, Module.Y_AxisFootprint);
+
+		// Load base mesh
+		UStaticMesh* BaseMesh = Module.BaseMesh.LoadSynchronous();
+		if (!BaseMesh)
+		{
+			UE_LOG(LogTemp, Error, TEXT("    SKIPPED: BaseMesh failed to load"));
+			WallsSkipped++;
+			continue;
+		}
+
+		// Get edge cells to validate placement
+		TArray<FIntPoint> EdgeCells = GetCellsForEdge(ForcedWall.Edge);
+		if (EdgeCells.Num() == 0)
+		{
+			UE_LOG(LogTemp, Error, TEXT("    SKIPPED: No cells on edge %d"), (int32)ForcedWall.Edge);
+			WallsSkipped++;
+			continue;
+		}
+
+		// Check if placement is valid (cells available)
+		int32 Footprint = Module.Y_AxisFootprint;
+		if (ForcedWall.StartCell < 0 || ForcedWall.StartCell + Footprint > EdgeCells.Num())
+		{
+			UE_LOG(LogTemp, Error, TEXT("    SKIPPED: Invalid cell range (StartCell=%d, Footprint=%d, EdgeLength=%d)"),
+				ForcedWall.StartCell, Footprint, EdgeCells.Num());
+			WallsSkipped++;
+			continue;
+		}
+
+		// Check if cells are already occupied (by doors or other forced walls)
+		bool bCellsOccupied = false;
+		for (int32 j = 0; j < Footprint; j++)
+		{
+			int32 CellIndex = ForcedWall.StartCell + j;
+			FIntPoint CellCoord = EdgeCells[CellIndex];
+			if (OccupancyGrid.Contains(CellCoord))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("    Cell %d (coord %d,%d) already occupied!"),
+					CellIndex, CellCoord.X, CellCoord.Y);
+				bCellsOccupied = true;
+				break;
+			}
+		}
+
+		if (bCellsOccupied)
+		{
+			UE_LOG(LogTemp, Error, TEXT("    SKIPPED: Cells already occupied"));
+			WallsSkipped++;
+			continue;
+		}
+
+		// Calculate wall position
+		FVector WallPosition;
+		bool bIsNorthWall = (ForcedWall.Edge == EWallEdge::North);
+		bool bIsEastWall = (ForcedWall.Edge == EWallEdge::East);
+
+		float WallLength = Footprint * CELL_SIZE;
+
+		if (ForcedWall.Edge == EWallEdge::North || ForcedWall.Edge == EWallEdge::South)
+		{
+			// North/South walls: Get X and StartY from EdgeCells
+			int32 X = EdgeCells[ForcedWall.StartCell].X;
+			int32 StartY = EdgeCells[ForcedWall.StartCell].Y;
+			WallPosition = CalculateNorthSouthWallPosition(X, StartY, WallLength, bIsNorthWall);
+		}
+		else
+		{
+			// East/West walls: Get StartX and Y from EdgeCells
+			int32 StartX = EdgeCells[ForcedWall.StartCell].X;
+			int32 Y = EdgeCells[ForcedWall.StartCell].Y;
+			WallPosition = CalculateEastWestWallPosition(StartX, Y, WallLength, bIsEastWall);
+		}
+
+		// Get wall rotation
+		FRotator WallRotation = GetWallRotationForEdge(ForcedWall.Edge);
+
+		// Spawn base wall mesh
+		UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreateHISM(BaseMesh);
+		if (HISM)
+		{
+			FTransform WallTransform(WallRotation, WallPosition, FVector(1.0f));
+			int32 InstanceIndex = HISM->AddInstance(WallTransform);
+
+			UE_LOG(LogTemp, Warning, TEXT("    BASE WALL PLACED at %s (Instance %d)"),
+				*WallPosition.ToString(), InstanceIndex);
+
+			// Mark cells as occupied
+			for (int32 j = 0; j < Footprint; j++)
+			{
+				int32 CellIndex = ForcedWall.StartCell + j;
+				FIntPoint CellCoord = EdgeCells[CellIndex];
+				OccupancyGrid.Add(CellCoord, EGridCellType::ECT_Wall);
+			}
+
+			// Track for Middle/Top spawning
+			FWallSegmentInfo SegmentInfo;
+			SegmentInfo.Edge = ForcedWall.Edge;
+			SegmentInfo.StartCell = ForcedWall.StartCell;
+			SegmentInfo.SegmentLength = Footprint;
+			SegmentInfo.BaseTransform = WallTransform;
+			SegmentInfo.BaseMesh = BaseMesh;
+			SegmentInfo.WallModule = &Module;
+
+			PlacedBaseWalls.Add(SegmentInfo);
+
+			WallsPlaced++;
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("    SKIPPED: Failed to get/create HISM"));
+			WallsSkipped++;
+		}
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Forced walls complete: %d placed, %d skipped"), WallsPlaced, WallsSkipped);
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 }
 
 // ==================================================================================
@@ -1902,43 +2052,43 @@ void AMasterRoom::SpawnCorners()
 		TEXT("SouthWest")
 	});
 	
-	// NorthWest Corner (0, GridSize.Y) - Top-left
+	// SouthEast Corner (0, GridSize.Y) - Bottom-right (Y+ is East)
 	Corners.Add({
 		ActorLocation + FVector(0.0f, GridSize.Y * CELL_SIZE, 0.0f),
 		FRotator(0.0f, 0.0f, 0.0f),
-		TEXT("NorthWest")
+		TEXT("SouthEast")
 	});
 	
-	// NorthEast Corner (GridSize.X, GridSize.Y) - Top-right
+	// NorthEast Corner (GridSize.X, GridSize.Y) - Top-right (X+ is North, Y+ is East)
 	Corners.Add({
 		ActorLocation + FVector(GridSize.X * CELL_SIZE, GridSize.Y * CELL_SIZE, 0.0f),
 		FRotator(0.0f, 0.0f, 0.0f),
 		TEXT("NorthEast")
 	});
 	
-	// SouthEast Corner (GridSize.X, 0) - Bottom-right
+	// NorthWest Corner (GridSize.X, 0) - Top-left (X+ is North)
 	Corners.Add({
 		ActorLocation + FVector(GridSize.X * CELL_SIZE, 0.0f, 0.0f),
 		FRotator(0.0f, 0.0f, 0.0f),
-		TEXT("SouthEast")
+		TEXT("NorthWest")
 	});
 	
 	UE_LOG(LogTemp, Warning, TEXT("Corner positions calculated: %d corners"), Corners.Num());
 	UE_LOG(LogTemp, Warning, TEXT("Per-corner offsets:"));
 	UE_LOG(LogTemp, Warning, TEXT("  SouthWest: %s"), *WallData->SouthWestCornerOffset.ToString());
-	UE_LOG(LogTemp, Warning, TEXT("  NorthWest: %s"), *WallData->NorthWestCornerOffset.ToString());
-	UE_LOG(LogTemp, Warning, TEXT("  NorthEast: %s"), *WallData->NorthEastCornerOffset.ToString());
 	UE_LOG(LogTemp, Warning, TEXT("  SouthEast: %s"), *WallData->SouthEastCornerOffset.ToString());
+	UE_LOG(LogTemp, Warning, TEXT("  NorthEast: %s"), *WallData->NorthEastCornerOffset.ToString());
+	UE_LOG(LogTemp, Warning, TEXT("  NorthWest: %s"), *WallData->NorthWestCornerOffset.ToString());
 	
 	// Spawn all 4 corners with individual offsets
 	int32 CornersSpawned = 0;
 	
-	// Array of offsets matching corner order
+	// Array of offsets matching corner order (SW, SE, NE, NW - clockwise from bottom-left)
 	TArray<FVector> CornerOffsets = {
 		WallData->SouthWestCornerOffset,
 		WallData->SouthEastCornerOffset,
 		WallData->NorthEastCornerOffset,
-		WallData->NorthWestCornerOffset,		
+		WallData->NorthWestCornerOffset
 	};
 	
 	for (int32 i = 0; i < Corners.Num(); i++)

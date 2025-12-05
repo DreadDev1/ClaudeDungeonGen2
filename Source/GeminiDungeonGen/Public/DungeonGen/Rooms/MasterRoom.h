@@ -69,6 +69,12 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Generation|Designer Overrides|Walls")
 	TArray<FFixedDoorLocation> FixedDoorLocations;
 
+	// Array of specific wall modules to force-place at exact edge locations
+	// Use this to place specific walls (windows, vents, special modules) at precise positions
+	// Forced walls are placed before random wall generation
+	UPROPERTY(EditAnywhere, Category = "Generation|Designer Overrides|Walls")
+	TArray<FForcedWallPlacement> ForcedWalls;
+
 	// --- Procedural Door Placement ---
 	
 	// Enable automatic placement of random number of doors (within Min/Max range)
@@ -181,6 +187,12 @@ protected:
 	
 	// Spawn corner meshes at the 4 room corners (NW, NE, SW, SE)
 	void SpawnCorners();
+	
+	// --- Forced Wall Placement ---
+	
+	// Place forced wall modules at exact locations before random wall generation
+	// Marks cells as occupied and tracks for Middle/Top stacking
+	void PlaceForcedWalls();
 	
 	// --- Procedural Door Placement ---
 	
