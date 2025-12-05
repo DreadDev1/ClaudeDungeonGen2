@@ -9,6 +9,21 @@
 #include "Data/Room/RoomData.h"
 #include "MasterRoom.generated.h"
 
+// Tracks placed base wall segments for Middle/Top layer spawning
+// Stores transform and mesh info for socket-based stacking
+USTRUCT()
+struct FWallSegmentInfo
+{
+	GENERATED_BODY()
+	
+	EWallEdge Edge = EWallEdge::North;
+	int32 StartCell = 0;
+	int32 SegmentLength = 0;
+	FTransform BaseTransform = FTransform::Identity;
+	UStaticMesh* BaseMesh = nullptr;
+	const FWallModule* WallModule = nullptr;  // Reference to module for Middle/Top meshes
+};
+
 UCLASS()
 class GEMINIDUNGEONGEN_API AMasterRoom : public AActor
 {
@@ -54,20 +69,29 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Generation|Designer Overrides|Walls")
 	TArray<FFixedDoorLocation> FixedDoorLocations;
 
-	// --- Door Position Offset Controls ---
-	// Global offset applied to all doors for fine-tuning alignment with floor edges
-	// Note: Wall offsets are now in WallData asset (per-wall-type configuration)
-	
-	UPROPERTY(EditAnywhere, Category = "Generation|Designer Overrides|Doors|Position Offsets")
-	FVector DoorPositionOffset = FVector::ZeroVector;
-	
 	// --- Procedural Door Placement ---
 	
-	// Enable automatic placement of ONE door per edge (in valid gaps)
+	// Enable automatic placement of random number of doors (within Min/Max range)
 	// Doors are size-appropriate and placed randomly in available space
 	// Designers can manually override by adding to FixedDoorLocations
 	UPROPERTY(EditAnywhere, Category = "Generation|Procedural Doors")
 	bool bEnableProceduralDoors = false;
+	
+	// Minimum number of procedural doors to place (1-4)
+	// Ignored if RequiredDoorEdges is specified
+	UPROPERTY(EditAnywhere, Category = "Generation|Procedural Doors", meta = (ClampMin = "1", ClampMax = "4", EditCondition = "bEnableProceduralDoors"))
+	int32 MinProceduralDoors = 1;
+	
+	// Maximum number of procedural doors to place (1-4)
+	// Ignored if RequiredDoorEdges is specified
+	UPROPERTY(EditAnywhere, Category = "Generation|Procedural Doors", meta = (ClampMin = "1", ClampMax = "4", EditCondition = "bEnableProceduralDoors"))
+	int32 MaxProceduralDoors = 2;
+	
+	// Specify exact edges that MUST have doors (overrides Min/Max randomization)
+	// Used by DungeonManager to ensure proper room-to-room connections
+	// Leave empty for random placement based on Min/Max
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Generation|Procedural Doors", meta = (EditCondition = "bEnableProceduralDoors"))
+	TArray<EWallEdge> RequiredDoorEdges;
 
 private:
 	// Internal grid array to track occupancy (used during runtime generation)
@@ -77,8 +101,9 @@ private:
 	// Used during generation to prevent overlapping placement
 	TMap<FIntPoint, EGridCellType> OccupancyGrid;
 	
-	// Flag to prevent infinite recursion during procedural door placement
-	bool bIsPlacingProceduralDoors = false;
+	// Tracks placed base wall segments for Middle/Top layer spawning
+	// Stores transform and mesh info for socket-based stacking
+	TArray<FWallSegmentInfo> PlacedBaseWalls;
 	
 	// Map to hold and manage HISM components (one HISM per unique Static Mesh)
 	TMap<UStaticMesh*, UHierarchicalInstancedStaticMeshComponent*> MeshToHISMMap;
@@ -140,6 +165,22 @@ protected:
 	
 	// Fill a wall segment with wall modules using bin packing
 	void FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 SegmentLength, FRandomStream& Stream);
+	
+	// --- Middle & Top Wall Spawning ---
+	
+	// Spawn middle wall layers on top of base walls (socket-based stacking)
+	void SpawnMiddleWalls();
+	
+	// Spawn top wall layer on top of middle walls (socket-based stacking)
+	void SpawnTopWalls();
+	
+	// Helper: Get socket transform from a static mesh
+	bool GetSocketTransform(UStaticMesh* Mesh, FName SocketName, FVector& OutLocation, FRotator& OutRotation) const;
+	
+	// --- Corner Spawning ---
+	
+	// Spawn corner meshes at the 4 room corners (NW, NE, SW, SE)
+	void SpawnCorners();
 	
 	// --- Procedural Door Placement ---
 	

@@ -79,8 +79,14 @@ struct FWallModule
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wall Meshes")
 	TSoftObjectPtr<UStaticMesh> BaseMesh; 
 
+	// Middle layer 1 (first middle layer, 100cm or 200cm tall)
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wall Meshes")
-	TSoftObjectPtr<UStaticMesh> MiddleMesh;
+	TSoftObjectPtr<UStaticMesh> Middle1Mesh;
+
+	// Middle layer 2 (optional second middle layer, typically 100cm tall)
+	// Only used if Middle1Mesh is also assigned
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wall Meshes")
+	TSoftObjectPtr<UStaticMesh> Middle2Mesh;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wall Meshes")
 	TSoftObjectPtr<UStaticMesh> TopMesh;
@@ -109,6 +115,26 @@ struct FForcedEmptyRegion
 	FIntPoint EndCell = FIntPoint(0, 0);
 };
 
+// --- Door Position Offsets ---
+
+// Struct for fine-tuning door placement positions
+// Allows designers to adjust door frame and actor positions independently per door
+USTRUCT(BlueprintType)
+struct FDoorPositionOffsets
+{
+	GENERATED_BODY()
+
+	// Offset for the door frame mesh (side pillars) from the wall base position
+	// Useful for aligning frames that don't perfectly match wall thickness
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door Offsets")
+	FVector FramePositionOffset = FVector::ZeroVector;
+
+	// Offset for the door actor (functional doorway) from the frame position
+	// Useful for centering the door collision/trigger within the frame
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door Offsets")
+	FVector ActorPositionOffset = FVector::ZeroVector;
+};
+
 // --- Door Placement (Designer Override System) ---
 
 // Struct for defining fixed door locations on room boundaries
@@ -131,4 +157,9 @@ struct FFixedDoorLocation
 	// Door asset to use (reference to DoorData asset)
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door Placement")
 	UDoorData* DoorData = nullptr;
+
+	// Position offsets for THIS specific door (allows individual door positioning)
+	// If left at zero, no additional offset is applied (beyond base wall alignment)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Door Placement")
+	FDoorPositionOffsets DoorPositionOffsets;
 };

@@ -431,8 +431,9 @@ FVector AMasterRoom::CalculateDoorPosition(EWallEdge Edge, int32 StartCell, floa
 		}
 	}
 	
-	// Apply global door position offset for fine-tuning
-	return BasePosition + DoorPivotOffset + DoorPositionOffset;
+	// Return base position with door pivot offset
+	// Per-door offsets are applied separately during door spawning
+	return BasePosition + DoorPivotOffset;
 }
 
 void AMasterRoom::FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 SegmentLength, FRandomStream& Stream)
@@ -494,12 +495,26 @@ void AMasterRoom::FillWallSegment(EWallEdge Edge, int32 SegmentStart, int32 Segm
 			Position = CalculateEastWestWallPosition(StartX, Y, WallMeshLength, bIsEastWall);
 		}
 		
+		// Base walls spawn at floor level (Z=0)
+		// BottomBackCenter socket will be at floor level
+		// (No offset needed - mesh origin at floor)
+		
 		// Place base mesh
 		UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreateHISM(BaseMesh);
 		if (HISM)
 		{
 			FTransform Transform(WallRotation, Position, FVector(1.0f));
 			HISM->AddInstance(Transform);
+			
+			// Track this base wall for Middle/Top spawning
+			FWallSegmentInfo SegmentInfo;
+			SegmentInfo.Edge = Edge;
+			SegmentInfo.StartCell = CurrentCell;
+			SegmentInfo.SegmentLength = BestModule->Y_AxisFootprint;
+			SegmentInfo.BaseTransform = Transform;
+			SegmentInfo.BaseMesh = BaseMesh;
+			SegmentInfo.WallModule = BestModule;
+			PlacedBaseWalls.Add(SegmentInfo);
 		}
 		
 		// Advance to next segment
@@ -848,12 +863,15 @@ void AMasterRoom::GenerateWallsAndDoors()
 	// Clear OccupancyGrid for fresh generation
 	OccupancyGrid.Empty();
 	
-	// Clear procedural doors ONLY if this is NOT a regeneration call from PlaceProceduralDoors
-	// This prevents clearing the doors that were just placed
-	if (bEnableProceduralDoors && !bIsPlacingProceduralDoors)
+	// Clear base wall tracking for Middle/Top spawning
+	PlacedBaseWalls.Empty();
+	
+	// Clear procedural doors from previous generation to prevent accumulation
+	// Note: Manual doors in FixedDoorLocations should be cleared by designer if needed
+	if (bEnableProceduralDoors)
 	{
 		FixedDoorLocations.Empty();
-		UE_LOG(LogTemp, Warning, TEXT("Cleared FixedDoorLocations (procedural mode enabled, initial call)"));
+		UE_LOG(LogTemp, Warning, TEXT("Cleared FixedDoorLocations (procedural mode - will regenerate)"));
 	}
 
 	// === EXTENSIVE LOGGING START ===
@@ -881,6 +899,16 @@ void AMasterRoom::GenerateWallsAndDoors()
 	// === EXTENSIVE LOGGING END ===
 
 	FRandomStream RandomStream(GenerationSeed);
+
+	// --- Procedural Door Placement (if enabled) ---
+	// IMPORTANT: This must happen BEFORE edge processing so doors are in FixedDoorLocations
+	// when walls are placed, allowing walls to respect door positions
+	if (bEnableProceduralDoors)
+	{
+		PlaceProceduralDoors(RandomStream);
+		UE_LOG(LogTemp, Warning, TEXT("Procedural doors placed. FixedDoorLocations now has %d entries"), 
+			FixedDoorLocations.Num());
+	}
 
 	TArray<EWallEdge> Edges = {EWallEdge::North, EWallEdge::South, EWallEdge::East, EWallEdge::West};
 	
@@ -965,9 +993,17 @@ void AMasterRoom::GenerateWallsAndDoors()
 					float MiddleCell = DoorLoc.StartCell + (DoorFootprint / 2.0f);
 					FVector DoorCenterPos = CalculateDoorPosition(Edge, MiddleCell, 0.0f);
 					
+					// Door frames spawn at floor level (Z=0), matching base walls
+					// BottomBackCenter socket will be at floor level
+					
+					// Apply per-door frame position offset
+					DoorCenterPos += DoorLoc.DoorPositionOffsets.FramePositionOffset;
+					
 					UE_LOG(LogTemp, Warning, TEXT("  Placing COMPLETE door frame: Footprint=%d cells, StartCell=%d"), 
 						DoorFootprint, DoorLoc.StartCell);
 					UE_LOG(LogTemp, Warning, TEXT("  Calculated middle cell: %.2f"), MiddleCell);
+					UE_LOG(LogTemp, Warning, TEXT("  Applied FramePositionOffset: %s"), 
+						*DoorLoc.DoorPositionOffsets.FramePositionOffset.ToString());
 					
 					// Place ONE instance of the complete door frame
 					HISM_Side->AddInstance(FTransform(DoorRotation, DoorCenterPos, FVector(1.0f)));
@@ -988,6 +1024,9 @@ void AMasterRoom::GenerateWallsAndDoors()
 			}
 			
 			// Mark the cells as occupied by this door (essential for wall filling logic)
+			UE_LOG(LogTemp, Warning, TEXT("  Marking door cells as occupied: StartCell=%d, Footprint=%d"), 
+				DoorLoc.StartCell, DoorFootprint);
+			
 			for (int32 i = 0; i < DoorFootprint && (DoorLoc.StartCell + i) < EdgeCells.Num(); ++i)
 			{
 				int32 CellIndex = DoorLoc.StartCell + i;
@@ -997,14 +1036,21 @@ void AMasterRoom::GenerateWallsAndDoors()
 					
 					// Also mark in OccupancyGrid for global tracking
 					const FIntPoint& CellPos = EdgeCells[CellIndex];
-					OccupancyGrid.Add(CellPos, EGridCellType::ECT_Doorway);
+					OccupancyGrid.Add(CellPos, EGridCellType::Door);
+					
+					UE_LOG(LogTemp, Warning, TEXT("    Marked cell %d as OCCUPIED (pos: %s)"), 
+						CellIndex, *CellPos.ToString());
 				}
 			}
 			
 			// TODO: Add logic here to spawn the ADoorway actor using DoorData->DoorwayClass
+			// When implemented, apply DoorLoc.DoorPositionOffsets.ActorPositionOffset to actor position:
+			// FVector ActorPos = DoorCenterPos + DoorLoc.DoorPositionOffsets.ActorPositionOffset;
+			// GetWorld()->SpawnActor<ADoorway>(DoorData->DoorwayClass, ActorPos, DoorRotation);
 		}
 
 		// --- PASS 2: Find continuous wall segments (non-door cells) and fill them ---
+		UE_LOG(LogTemp, Warning, TEXT(">>> PASS 2: Finding wall segments (skipping occupied cells) <<<"));
 		int32 SegmentStart = -1;
 		for (int32 i = 0; i < CellOccupied.Num(); ++i)
 		{
@@ -1018,9 +1064,12 @@ void AMasterRoom::GenerateWallsAndDoors()
 			}
 			else
 			{
+				UE_LOG(LogTemp, Warning, TEXT("  Cell %d is OCCUPIED (skipping for walls)"), i);
 				if (SegmentStart != -1)
 				{
 					int32 SegmentLength = i - SegmentStart;
+					UE_LOG(LogTemp, Warning, TEXT("  Found wall segment: Start=%d, Length=%d"), 
+						SegmentStart, SegmentLength);
 					FillWallSegment(Edge, SegmentStart, SegmentLength, RandomStream);
 					SegmentStart = -1;
 				}
@@ -1031,26 +1080,30 @@ void AMasterRoom::GenerateWallsAndDoors()
 		if (SegmentStart != -1)
 		{
 			int32 SegmentLength = CellOccupied.Num() - SegmentStart;
+			UE_LOG(LogTemp, Warning, TEXT("  Found final wall segment: Start=%d, Length=%d"), 
+				SegmentStart, SegmentLength);
 			FillWallSegment(Edge, SegmentStart, SegmentLength, RandomStream);
 		}
 	}
 	
-	// --- Procedural Door Placement (if enabled) ---
-	if (bEnableProceduralDoors)
-	{
-		PlaceProceduralDoors(RandomStream);
-	}
+	// --- Spawn Middle & Top Wall Layers ---
+	// Now that all base walls are placed and tracked, spawn stacked layers
+	SpawnMiddleWalls();
+	SpawnTopWalls();
+	
+	// --- Spawn Corner Pieces ---
+	// Place corner meshes at the 4 room corners
+	SpawnCorners();
+	
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("GenerateWallsAndDoors() COMPLETE"));
+	UE_LOG(LogTemp, Warning, TEXT("Base walls placed: %d segments"), PlacedBaseWalls.Num());
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 }
 
 void AMasterRoom::PlaceProceduralDoors(FRandomStream& Stream)
 {
 	if (!RoomData) return;
-	
-	// Prevent infinite recursion using member variable flag
-	if (bIsPlacingProceduralDoors)
-	{
-		return; // Already placing doors, don't recurse
-	}
 	
 	// Load the DoorData pack
 	UDoorData* DoorData = RoomData->DoorStyleData.LoadSynchronous();
@@ -1060,30 +1113,74 @@ void AMasterRoom::PlaceProceduralDoors(FRandomStream& Stream)
 		return;
 	}
 	
-	// Set recursion guard
-	bIsPlacingProceduralDoors = true;
-	
 	// Log pool info (empty pool is OK - will use DoorData itself as fallback)
 	int32 PoolSize = DoorData->DoorStylePool.Num();
 	UE_LOG(LogTemp, Warning, TEXT("========================================"));
-	UE_LOG(LogTemp, Warning, TEXT("PROCEDURAL DOOR PLACEMENT - 1 Per Edge"));
-	UE_LOG(LogTemp, Warning, TEXT("Door Pool Size: %d %s"), PoolSize, 
-		(PoolSize == 0) ? TEXT("(using fallback - single door mode)") : TEXT(""));
+	
+	// Check if specific edges are required (overrides randomization)
+	TArray<EWallEdge> EdgesToProcess;
+	bool bUsingRequiredEdges = RequiredDoorEdges.Num() > 0;
+	
+	if (bUsingRequiredEdges)
+	{
+		// REQUIRED EDGES MODE: Use specified edges exactly
+		EdgesToProcess = RequiredDoorEdges;
+		UE_LOG(LogTemp, Warning, TEXT("PROCEDURAL DOOR PLACEMENT - Required Edges Mode"));
+		UE_LOG(LogTemp, Warning, TEXT("Door Pool Size: %d %s"), PoolSize, 
+			(PoolSize == 0) ? TEXT("(using fallback - single door mode)") : TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("Required Edges: %d (ignoring Min/Max)"), EdgesToProcess.Num());
+		for (int32 i = 0; i < EdgesToProcess.Num(); ++i)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("  Edge %d: %d"), i, (int32)EdgesToProcess[i]);
+		}
+	}
+	else
+	{
+		// RANDOMIZATION MODE: Use Min/Max range
+		int32 NumDoorsToPlace = Stream.RandRange(MinProceduralDoors, MaxProceduralDoors);
+		
+		UE_LOG(LogTemp, Warning, TEXT("PROCEDURAL DOOR PLACEMENT - Randomized Mode"));
+		UE_LOG(LogTemp, Warning, TEXT("Door Pool Size: %d %s"), PoolSize, 
+			(PoolSize == 0) ? TEXT("(using fallback - single door mode)") : TEXT(""));
+		UE_LOG(LogTemp, Warning, TEXT("Target Doors: %d (Min=%d, Max=%d)"), 
+			NumDoorsToPlace, MinProceduralDoors, MaxProceduralDoors);
+		
+		// Create array of all edges and shuffle it for random selection
+		TArray<EWallEdge> AllEdges = {EWallEdge::North, EWallEdge::South, EWallEdge::East, EWallEdge::West};
+		
+		// Fisher-Yates shuffle algorithm for random edge order
+		for (int32 i = AllEdges.Num() - 1; i > 0; --i)
+		{
+			int32 j = Stream.RandRange(0, i);
+			AllEdges.Swap(i, j);
+		}
+		
+		UE_LOG(LogTemp, Warning, TEXT("Shuffled edge order: %d, %d, %d, %d"), 
+			(int32)AllEdges[0], (int32)AllEdges[1], (int32)AllEdges[2], (int32)AllEdges[3]);
+		
+		// Take first N edges from shuffled array
+		for (int32 i = 0; i < NumDoorsToPlace && i < AllEdges.Num(); ++i)
+		{
+			EdgesToProcess.Add(AllEdges[i]);
+		}
+	}
+	
 	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 	
-	TArray<EWallEdge> Edges = {EWallEdge::North, EWallEdge::South, EWallEdge::East, EWallEdge::West};
+	// Place doors on all edges in EdgesToProcess
 	int32 TotalDoorsPlaced = 0;
 	
-	for (EWallEdge Edge : Edges)
+	for (int32 EdgeIndex = 0; EdgeIndex < EdgesToProcess.Num(); ++EdgeIndex)
 	{
-		UE_LOG(LogTemp, Warning, TEXT(">>> Processing Edge %d <<<"), (int32)Edge);
+		EWallEdge Edge = EdgesToProcess[EdgeIndex];
+		UE_LOG(LogTemp, Warning, TEXT(">>> Attempting to place door on Edge %d <<<"), (int32)Edge);
 		
 		// Get all valid locations on this edge (gaps between fixed doors)
 		TArray<TPair<int32, int32>> ValidSpots = GetValidDoorLocations(Edge);
 		
 		if (ValidSpots.Num() == 0)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("  No valid gaps - skipping edge"));
+			UE_LOG(LogTemp, Warning, TEXT("  No valid gaps - skipping this edge"));
 			continue;
 		}
 		
@@ -1148,19 +1245,26 @@ void AMasterRoom::PlaceProceduralDoors(FRandomStream& Stream)
 	
 	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 	UE_LOG(LogTemp, Warning, TEXT("PROCEDURAL PLACEMENT COMPLETE"));
-	UE_LOG(LogTemp, Warning, TEXT("Total Doors Placed: %d"), TotalDoorsPlaced);
-	UE_LOG(LogTemp, Warning, TEXT("========================================"));
-	
-	// If we placed any doors, regenerate walls to account for them
-	// Keep the recursion guard active during regeneration!
-	if (TotalDoorsPlaced > 0)
+	if (bUsingRequiredEdges)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Regenerating walls with new procedural doors..."));
-		GenerateWallsAndDoors();
+		UE_LOG(LogTemp, Warning, TEXT("Mode: Required Edges | Target: %d doors | Placed: %d doors"), 
+			EdgesToProcess.Num(), TotalDoorsPlaced);
+		if (TotalDoorsPlaced < EdgesToProcess.Num())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("WARNING: Some required edges had no valid gaps!"));
+		}
 	}
-	
-	// NOW clear recursion guard AFTER regeneration is complete
-	bIsPlacingProceduralDoors = false;
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Mode: Randomized | Target: %d doors | Placed: %d doors"), 
+			EdgesToProcess.Num(), TotalDoorsPlaced);
+		if (TotalDoorsPlaced < EdgesToProcess.Num())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Note: Some edges had no valid gaps"));
+		}
+	}
+	UE_LOG(LogTemp, Warning, TEXT("Doors added to FixedDoorLocations - walls will respect them"));
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 }
 
 void AMasterRoom::ExecuteForcedPlacements(FRandomStream& Stream)
@@ -1362,7 +1466,7 @@ bool AMasterRoom::CanFitDoor(EWallEdge Edge, int32 StartCell, int32 Footprint) c
 		if (OccupancyGrid.Contains(CellPos))
 		{
 			EGridCellType CellType = OccupancyGrid[CellPos];
-			if (CellType != EGridCellType::ECT_Doorway && CellType != EGridCellType::ECT_Empty)
+			if (CellType != EGridCellType::Door && CellType != EGridCellType::Empty)
 			{
 				return false; // Cell is occupied by wall or other object
 			}
@@ -1462,6 +1566,348 @@ TArray<TPair<int32, int32>> AMasterRoom::GetValidDoorLocations(EWallEdge Edge) c
 	}
 	
 	return ValidLocations;
+}
+
+// --- Middle & Top Wall Spawning Implementation ---
+
+void AMasterRoom::SpawnMiddleWalls()
+{
+	if (!RoomData) return;
+	
+	UWallData* WallData = RoomData->WallStyleData.LoadSynchronous();
+	if (!WallData) return;
+	
+	int32 Middle1Spawned = 0;
+	int32 Middle2Spawned = 0;
+	int32 MiddleSkipped = 0;
+	
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("SPAWNING MIDDLE WALLS (2-Layer System)"));
+	UE_LOG(LogTemp, Warning, TEXT("Base wall segments to process: %d"), PlacedBaseWalls.Num());
+	
+	for (const FWallSegmentInfo& Segment : PlacedBaseWalls)
+	{
+		// Check if this module exists
+		if (!Segment.WallModule)
+		{
+			MiddleSkipped++;
+			continue;
+		}
+		
+		// --- MIDDLE 1 LAYER ---
+		// Try to load Middle1 mesh
+		UStaticMesh* Middle1Mesh = Segment.WallModule->Middle1Mesh.LoadSynchronous();
+		
+		if (Middle1Mesh)
+		{
+			// Get socket from Base mesh
+			FVector SocketLocation;
+			FRotator SocketRotation;
+			bool bHasSocket = GetSocketTransform(Segment.BaseMesh, FName("TopBackCenter"), SocketLocation, SocketRotation);
+			
+			if (!bHasSocket)
+			{
+				// Fallback: Base wall height is 100cm
+				SocketLocation = FVector(0, 0, 100.0f);
+				SocketRotation = FRotator::ZeroRotator;
+			}
+			
+			// Calculate world transform for Middle1
+			FTransform SocketTransform(SocketRotation, SocketLocation);
+			FTransform Middle1WorldTransform = SocketTransform * Segment.BaseTransform;
+			
+			// Spawn Middle1
+			UHierarchicalInstancedStaticMeshComponent* HISM1 = GetOrCreateHISM(Middle1Mesh);
+			if (HISM1)
+			{
+				HISM1->AddInstance(Middle1WorldTransform);
+				Middle1Spawned++;
+				
+				// --- MIDDLE 2 LAYER (only if Middle1 exists) ---
+				UStaticMesh* Middle2Mesh = Segment.WallModule->Middle2Mesh.LoadSynchronous();
+				
+				if (Middle2Mesh)
+				{
+					// Get socket from Middle1 mesh
+					FVector Middle2SocketLocation;
+					FRotator Middle2SocketRotation;
+					bool bHasMiddle1Socket = GetSocketTransform(Middle1Mesh, FName("TopBackCenter"), 
+					                                            Middle2SocketLocation, Middle2SocketRotation);
+					
+					if (!bHasMiddle1Socket)
+					{
+						// Fallback: Assume Middle1 is 100cm or 200cm tall
+						// Check bounds to determine
+						FBoxSphereBounds Bounds = Middle1Mesh->GetBounds();
+						float Middle1Height = (Bounds.BoxExtent.Z * 2.0f);
+						Middle2SocketLocation = FVector(0, 0, Middle1Height);
+						Middle2SocketRotation = FRotator::ZeroRotator;
+						
+						UE_LOG(LogTemp, Verbose, TEXT("  Middle1 mesh missing TopBackCenter, using bounds: Z=%.1f"), Middle1Height);
+					}
+					
+					// Chain transforms: Base → Middle1 → Middle2
+					FTransform Middle1SocketTransform(Middle2SocketRotation, Middle2SocketLocation);
+					FTransform Middle2WorldTransform = Middle1SocketTransform * Middle1WorldTransform;
+					
+					// Spawn Middle2
+					UHierarchicalInstancedStaticMeshComponent* HISM2 = GetOrCreateHISM(Middle2Mesh);
+					if (HISM2)
+					{
+						HISM2->AddInstance(Middle2WorldTransform);
+						Middle2Spawned++;
+					}
+				}
+			}
+		}
+		else
+		{
+			// No Middle1 mesh, skip entirely (Middle2 requires Middle1)
+			MiddleSkipped++;
+		}
+	}
+	
+	UE_LOG(LogTemp, Warning, TEXT("Middle1 walls spawned: %d"), Middle1Spawned);
+	UE_LOG(LogTemp, Warning, TEXT("Middle2 walls spawned: %d"), Middle2Spawned);
+	UE_LOG(LogTemp, Warning, TEXT("Middle walls skipped (no Middle1): %d"), MiddleSkipped);
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+}
+
+void AMasterRoom::SpawnTopWalls()
+{
+	if (!RoomData) return;
+	
+	UWallData* WallData = RoomData->WallStyleData.LoadSynchronous();
+	if (!WallData) return;
+	
+	int32 TopSpawned = 0;
+	int32 TopSkipped = 0;
+	
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("SPAWNING TOP WALLS"));
+	UE_LOG(LogTemp, Warning, TEXT("Base wall segments to process: %d"), PlacedBaseWalls.Num());
+	
+	for (const FWallSegmentInfo& Segment : PlacedBaseWalls)
+	{
+		// Check if this module exists
+		if (!Segment.WallModule)
+		{
+			TopSkipped++;
+			continue;
+		}
+		
+		// Load middle meshes (may or may not exist)
+		UStaticMesh* Middle1Mesh = Segment.WallModule->Middle1Mesh.LoadSynchronous();
+		UStaticMesh* Middle2Mesh = Segment.WallModule->Middle2Mesh.LoadSynchronous();
+		
+		// Load top mesh (required)
+		UStaticMesh* TopMesh = Segment.WallModule->TopMesh.LoadSynchronous();
+		
+		if (!TopMesh)
+		{
+			TopSkipped++;
+			UE_LOG(LogTemp, Verbose, TEXT("  Segment: No top mesh assigned"));
+			continue;
+		}
+		
+		// Find the highest point to stack Top from (priority: Middle2 > Middle1 > Base)
+		FVector SocketLocation;
+		FRotator SocketRotation;
+		FTransform StackBaseTransform = Segment.BaseTransform;
+		UStaticMesh* StackFromMesh = nullptr;
+		
+		// Determine which layer Top should stack on
+		if (Middle2Mesh && Middle1Mesh)
+		{
+			// Stack on Middle2: Base → Middle1 → Middle2 → Top
+			// Calculate Middle1 position
+			FVector BaseToMiddle1Socket;
+			FRotator BaseToMiddle1Rot;
+			bool bHasBaseSocket = GetSocketTransform(Segment.BaseMesh, FName("TopBackCenter"), 
+			                                         BaseToMiddle1Socket, BaseToMiddle1Rot);
+			if (!bHasBaseSocket)
+			{
+				BaseToMiddle1Socket = FVector(0, 0, 100.0f);
+				BaseToMiddle1Rot = FRotator::ZeroRotator;
+			}
+			
+			FTransform BaseToMiddle1(BaseToMiddle1Rot, BaseToMiddle1Socket);
+			FTransform Middle1WorldTransform = BaseToMiddle1 * Segment.BaseTransform;
+			
+			// Calculate Middle2 position
+			FVector Middle1ToMiddle2Socket;
+			FRotator Middle1ToMiddle2Rot;
+			bool bHasMiddle1Socket = GetSocketTransform(Middle1Mesh, FName("TopBackCenter"), 
+			                                            Middle1ToMiddle2Socket, Middle1ToMiddle2Rot);
+			if (!bHasMiddle1Socket)
+			{
+				FBoxSphereBounds Bounds = Middle1Mesh->GetBounds();
+				Middle1ToMiddle2Socket = FVector(0, 0, Bounds.BoxExtent.Z * 2.0f);
+				Middle1ToMiddle2Rot = FRotator::ZeroRotator;
+			}
+			
+			FTransform Middle1ToMiddle2(Middle1ToMiddle2Rot, Middle1ToMiddle2Socket);
+			FTransform Middle2WorldTransform = Middle1ToMiddle2 * Middle1WorldTransform;
+			
+			// Get Middle2's top socket for Top placement
+			bool bHasMiddle2Socket = GetSocketTransform(Middle2Mesh, FName("TopBackCenter"), 
+			                                            SocketLocation, SocketRotation);
+			if (!bHasMiddle2Socket)
+			{
+				FBoxSphereBounds Bounds = Middle2Mesh->GetBounds();
+				SocketLocation = FVector(0, 0, Bounds.BoxExtent.Z * 2.0f);
+				SocketRotation = FRotator::ZeroRotator;
+			}
+			
+			StackBaseTransform = Middle2WorldTransform;
+		}
+		else if (Middle1Mesh)
+		{
+			// Stack on Middle1: Base → Middle1 → Top
+			FVector BaseToMiddle1Socket;
+			FRotator BaseToMiddle1Rot;
+			bool bHasBaseSocket = GetSocketTransform(Segment.BaseMesh, FName("TopBackCenter"), 
+			                                         BaseToMiddle1Socket, BaseToMiddle1Rot);
+			if (!bHasBaseSocket)
+			{
+				BaseToMiddle1Socket = FVector(0, 0, 100.0f);
+				BaseToMiddle1Rot = FRotator::ZeroRotator;
+			}
+			
+			// Get Middle1's top socket for Top placement
+			bool bHasMiddle1Socket = GetSocketTransform(Middle1Mesh, FName("TopBackCenter"), 
+			                                            SocketLocation, SocketRotation);
+			if (!bHasMiddle1Socket)
+			{
+				FBoxSphereBounds Bounds = Middle1Mesh->GetBounds();
+				SocketLocation = FVector(0, 0, Bounds.BoxExtent.Z * 2.0f);
+				SocketRotation = FRotator::ZeroRotator;
+			}
+			
+			FTransform BaseToMiddle1(BaseToMiddle1Rot, BaseToMiddle1Socket);
+			StackBaseTransform = BaseToMiddle1 * Segment.BaseTransform;
+		}
+		else
+		{
+			// Stack directly on Base: Base → Top
+			bool bHasBaseSocket = GetSocketTransform(Segment.BaseMesh, FName("TopBackCenter"), 
+			                                         SocketLocation, SocketRotation);
+			if (!bHasBaseSocket)
+			{
+				SocketLocation = FVector(0, 0, 100.0f);
+				SocketRotation = FRotator::ZeroRotator;
+			}
+			
+			StackBaseTransform = Segment.BaseTransform;
+		}
+		
+		// Calculate final world transform for Top
+		FTransform SocketTransform(SocketRotation, SocketLocation);
+		FTransform TopWorldTransform = SocketTransform * StackBaseTransform;
+		
+		// Spawn top mesh
+		UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreateHISM(TopMesh);
+		if (HISM)
+		{
+			HISM->AddInstance(TopWorldTransform);
+			TopSpawned++;
+		}
+	}
+	
+	UE_LOG(LogTemp, Warning, TEXT("Top walls spawned: %d"), TopSpawned);
+	UE_LOG(LogTemp, Warning, TEXT("Top walls skipped (no mesh): %d"), TopSkipped);
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+}
+
+bool AMasterRoom::GetSocketTransform(UStaticMesh* Mesh, FName SocketName, FVector& OutLocation, FRotator& OutRotation) const
+{
+	if (!Mesh) return false;
+	
+	// Find socket in mesh
+	UStaticMeshSocket* Socket = Mesh->FindSocket(SocketName);
+	if (Socket)
+	{
+		OutLocation = Socket->RelativeLocation;
+		OutRotation = Socket->RelativeRotation;
+		return true;
+	}
+	
+	return false;
+}
+
+void AMasterRoom::SpawnCorners()
+{
+	if (!RoomData) return;
+	
+	UWallData* WallData = RoomData->WallStyleData.LoadSynchronous();
+	if (!WallData || !WallData->DefaultCornerMesh.IsValid()) return;
+	
+	UStaticMesh* CornerMesh = WallData->DefaultCornerMesh.LoadSynchronous();
+	if (!CornerMesh) return;
+	
+	const FIntPoint GridSize = RoomData->GridSize;
+	const FVector ActorLocation = GetActorLocation();
+	
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("SPAWNING CORNER MESHES"));
+	UE_LOG(LogTemp, Warning, TEXT("Corner Mesh: %s"), *CornerMesh->GetName());
+	
+	// Get HISM for corners
+	UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreateHISM(CornerMesh);
+	if (!HISM) return;
+	
+	// Define the 4 corners with positions and rotations
+	struct FCornerInfo
+	{
+		FVector Position;
+		FRotator Rotation;
+		FString Name;
+	};
+	
+	TArray<FCornerInfo> Corners;
+	
+	// Northwest Corner (0, GridSize.Y) - Facing southeast (135°)
+	Corners.Add({
+		ActorLocation + FVector(0.0f, GridSize.Y * CELL_SIZE, 0.0f),
+		FRotator(0.0f, 135.0f, 0.0f),
+		TEXT("NorthWest")
+	});
+	
+	// Northeast Corner (GridSize.X, GridSize.Y) - Facing southwest (225°)
+	Corners.Add({
+		ActorLocation + FVector(GridSize.X * CELL_SIZE, GridSize.Y * CELL_SIZE, 0.0f),
+		FRotator(0.0f, 225.0f, 0.0f),
+		TEXT("NorthEast")
+	});
+	
+	// Southwest Corner (0, 0) - Facing northeast (45°)
+	Corners.Add({
+		ActorLocation + FVector(0.0f, 0.0f, 0.0f),
+		FRotator(0.0f, 45.0f, 0.0f),
+		TEXT("SouthWest")
+	});
+	
+	// Southeast Corner (GridSize.X, 0) - Facing northwest (315°)
+	Corners.Add({
+		ActorLocation + FVector(GridSize.X * CELL_SIZE, 0.0f, 0.0f),
+		FRotator(0.0f, 315.0f, 0.0f),
+		TEXT("SouthEast")
+	});
+	
+	// Spawn all 4 corners
+	int32 CornersSpawned = 0;
+	for (const FCornerInfo& Corner : Corners)
+	{
+		FTransform CornerTransform(Corner.Rotation, Corner.Position, FVector(1.0f));
+		HISM->AddInstance(CornerTransform);
+		CornersSpawned++;
+		
+		UE_LOG(LogTemp, Warning, TEXT("  %s corner at: %s (Rotation: %.1f°)"), 
+			*Corner.Name, *Corner.Position.ToString(), Corner.Rotation.Yaw);
+	}
+	
+	UE_LOG(LogTemp, Warning, TEXT("Corners spawned: %d"), CornersSpawned);
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 }
 
 // Editor-only overrides for lifecycle management
