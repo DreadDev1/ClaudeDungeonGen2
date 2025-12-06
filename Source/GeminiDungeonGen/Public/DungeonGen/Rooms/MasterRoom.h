@@ -188,6 +188,12 @@ protected:
 	// Spawn corner meshes at the 4 room corners (NW, NE, SW, SE)
 	void SpawnCorners();
 	
+	// --- Ceiling Generation ---
+	
+	// Generate ceiling tiles covering the entire room grid
+	// Uses 400x400 tiles first, then 100x100 tiles to fill gaps
+	void GenerateCeiling();
+	
 	// --- Forced Wall Placement ---
 	
 	// Place forced wall modules at exact locations before random wall generation

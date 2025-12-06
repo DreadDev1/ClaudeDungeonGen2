@@ -10,6 +10,7 @@
 class UFloorData;
 class UWallData;
 class UDoorData;
+class UCeilingData;
 struct FMeshPlacementInfo;
 
 UCLASS()
@@ -33,6 +34,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Styles")
 	TSoftObjectPtr<UDoorData> DoorStyleData;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Styles")
+	TSoftObjectPtr<UCeilingData> CeilingStyleData;
 	
 	// --- Interior Mesh Randomization Pool ---
 

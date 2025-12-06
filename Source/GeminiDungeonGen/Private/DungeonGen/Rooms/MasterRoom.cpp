@@ -7,7 +7,7 @@
 #include "Data/Room/FloorData.h"
 #include "Data/Room/RoomData.h"
 #include "Data/Room/WallData.h"
-#include "Data/Grid/GridData.h"
+#include "Data/Room/CeilingData.h"
 #include "Engine/StaticMeshSocket.h"
 
 
@@ -159,6 +159,7 @@ void AMasterRoom::RegenerateRoom()
 	// 2. Run generation steps
 	GenerateFloorAndInterior();
 	GenerateWallsAndDoors();
+	GenerateCeiling();
 	
 	// 3. Force bounding box updates on all new and existing components
 	for (const auto& Pair : MeshToHISMMap)
@@ -2115,6 +2116,205 @@ void AMasterRoom::SpawnCorners()
 	
 	UE_LOG(LogTemp, Warning, TEXT("Corners spawned: %d"), CornersSpawned);
 	UE_LOG(LogTemp, Warning, TEXT("HISM instances AFTER adding corners: %d"), HISM->GetInstanceCount());
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+}
+
+// ==================================================================================
+// CEILING GENERATION
+// ==================================================================================
+
+void AMasterRoom::GenerateCeiling()
+{
+	if (!RoomData) return;
+
+	UCeilingData* CeilingData = RoomData->CeilingStyleData.LoadSynchronous();
+	if (!CeilingData)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("No CeilingData assigned - skipping ceiling generation"));
+		return;
+	}
+
+	const FIntPoint GridSize = RoomData->GridSize;
+	const FVector ActorLocation = GetActorLocation();
+	const float CeilingZ = CeilingData->CeilingHeight;
+
+	UE_LOG(LogTemp, Warning, TEXT("========================================"));
+	UE_LOG(LogTemp, Warning, TEXT("GENERATING CEILING"));
+	UE_LOG(LogTemp, Warning, TEXT("Grid Size: %d x %d"), GridSize.X, GridSize.Y);
+	UE_LOG(LogTemp, Warning, TEXT("Ceiling Height: %.1f"), CeilingZ);
+
+	// Create occupancy grid for ceiling
+	TArray<bool> CeilingOccupied;
+	CeilingOccupied.Init(false, GridSize.X * GridSize.Y);
+
+	int32 LargeTilesPlaced = 0;
+	int32 SmallTilesPlaced = 0;
+
+	// Helper lambda to check/mark cells
+	auto IsCellOccupied = [&](int32 X, int32 Y) -> bool
+	{
+		if (X < 0 || X >= GridSize.X || Y < 0 || Y >= GridSize.Y) return true;
+		return CeilingOccupied[Y * GridSize.X + X];
+	};
+
+	auto MarkCellsOccupied = [&](int32 StartX, int32 StartY, int32 Size)
+	{
+		for (int32 dx = 0; dx < Size; dx++)
+		{
+			for (int32 dy = 0; dy < Size; dy++)
+			{
+				int32 X = StartX + dx;
+				int32 Y = StartY + dy;
+				if (X >= 0 && X < GridSize.X && Y >= 0 && Y < GridSize.Y)
+				{
+					CeilingOccupied[Y * GridSize.X + X] = true;
+				}
+			}
+		}
+	};
+
+	// PASS 1: Place large tiles (400x400 = 4x4 cells)
+	if (CeilingData->LargeTilePool.Num() > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PASS 1: Placing large tiles (400x400)"));
+
+		// Calculate total weight for large tiles
+		float TotalWeight = 0.0f;
+		for (const FCeilingTile& Tile : CeilingData->LargeTilePool)
+		{
+			TotalWeight += Tile.PlacementWeight;
+		}
+
+		if (TotalWeight > 0.0f)
+		{
+			FRandomStream RandomStream(GenerationSeed);
+
+			// Try to place 4x4 tiles in a grid pattern
+			for (int32 X = 0; X <= GridSize.X - 4; X += 4)
+			{
+				for (int32 Y = 0; Y <= GridSize.Y - 4; Y += 4)
+				{
+					// Check if 4x4 area is free
+					bool bCanPlace = true;
+					for (int32 dx = 0; dx < 4 && bCanPlace; dx++)
+					{
+						for (int32 dy = 0; dy < 4 && bCanPlace; dy++)
+						{
+							if (IsCellOccupied(X + dx, Y + dy))
+							{
+								bCanPlace = false;
+							}
+						}
+					}
+
+					if (bCanPlace)
+					{
+						// Weighted random selection
+						float RandomValue = RandomStream.FRand() * TotalWeight;
+						float CurrentWeight = 0.0f;
+						UStaticMesh* SelectedMesh = nullptr;
+
+						for (const FCeilingTile& Tile : CeilingData->LargeTilePool)
+						{
+							CurrentWeight += Tile.PlacementWeight;
+							if (RandomValue <= CurrentWeight)
+							{
+								SelectedMesh = Tile.Mesh.LoadSynchronous();
+								break;
+							}
+						}
+
+						if (SelectedMesh)
+						{
+							// Calculate center position of 4x4 area
+							FVector TilePosition = ActorLocation + FVector(
+								(X + 2.0f) * CELL_SIZE,  // Center at X+2
+								(Y + 2.0f) * CELL_SIZE,  // Center at Y+2
+								CeilingZ
+							);
+
+							UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreateHISM(SelectedMesh);
+							if (HISM)
+							{
+								FTransform TileTransform(CeilingData->CeilingRotation, TilePosition, FVector(1.0f));
+								HISM->AddInstance(TileTransform);
+								MarkCellsOccupied(X, Y, 4);
+								LargeTilesPlaced++;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("Large tiles placed: %d"), LargeTilesPlaced);
+	}
+
+	// PASS 2: Fill remaining cells with small tiles (100x100 = 1x1 cell)
+	if (CeilingData->SmallTilePool.Num() > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PASS 2: Filling gaps with small tiles (100x100)"));
+
+		// Calculate total weight for small tiles
+		float TotalWeight = 0.0f;
+		for (const FCeilingTile& Tile : CeilingData->SmallTilePool)
+		{
+			TotalWeight += Tile.PlacementWeight;
+		}
+
+		if (TotalWeight > 0.0f)
+		{
+			FRandomStream RandomStream(GenerationSeed + 1000);  // Different seed for variety
+
+			for (int32 X = 0; X < GridSize.X; X++)
+			{
+				for (int32 Y = 0; Y < GridSize.Y; Y++)
+				{
+					if (!IsCellOccupied(X, Y))
+					{
+						// Weighted random selection
+						float RandomValue = RandomStream.FRand() * TotalWeight;
+						float CurrentWeight = 0.0f;
+						UStaticMesh* SelectedMesh = nullptr;
+
+						for (const FCeilingTile& Tile : CeilingData->SmallTilePool)
+						{
+							CurrentWeight += Tile.PlacementWeight;
+							if (RandomValue <= CurrentWeight)
+							{
+								SelectedMesh = Tile.Mesh.LoadSynchronous();
+								break;
+							}
+						}
+
+						if (SelectedMesh)
+						{
+							FVector TilePosition = ActorLocation + FVector(
+								(X + 0.5f) * CELL_SIZE,  // Center of cell
+								(Y + 0.5f) * CELL_SIZE,  // Center of cell
+								CeilingZ
+							);
+
+							UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreateHISM(SelectedMesh);
+							if (HISM)
+							{
+								FTransform TileTransform(CeilingData->CeilingRotation, TilePosition, FVector(1.0f));
+								HISM->AddInstance(TileTransform);
+								MarkCellsOccupied(X, Y, 1);
+								SmallTilesPlaced++;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("Small tiles placed: %d"), SmallTilesPlaced);
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("Ceiling generation complete!"));
+	UE_LOG(LogTemp, Warning, TEXT("Total tiles: %d large + %d small = %d total"), 
+		LargeTilesPlaced, SmallTilesPlaced, LargeTilesPlaced + SmallTilesPlaced);
 	UE_LOG(LogTemp, Warning, TEXT("========================================"));
 }
 
