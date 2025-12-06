@@ -24,6 +24,7 @@ struct FWallSegmentInfo
 	const FWallModule* WallModule = nullptr;  // Reference to module for Middle/Top meshes
 };
 
+class URoomShapePreset;
 UCLASS()
 class GEMINIDUNGEONGEN_API AMasterRoom : public AActor
 {
@@ -37,6 +38,12 @@ public:
 	// The Data Asset defining this room's layout and content rules
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Generation")
 	URoomData* RoomData;
+
+	// Optional: Pre-defined room shape (L-Shape, T-Shape, etc.)
+	// If set, the shape's EmptyRegions and EmptyCells are automatically applied
+	// Designers can use presets or create custom shapes
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Generation")
+	URoomShapePreset* ShapePreset;
 
 	// The seed used for generation (set by DungeonManager, tweakable by designer)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category = "Generation|Seed")

@@ -8,6 +8,7 @@
 #include "Data/Room/RoomData.h"
 #include "Data/Room/WallData.h"
 #include "Data/Room/CeilingData.h"
+#include "Data/Room/RoomShapePreset.h"
 #include "Engine/StaticMeshSocket.h"
 
 
@@ -100,7 +101,48 @@ TArray<FIntPoint> AMasterRoom::ExpandForcedEmptyRegions() const
 	const FIntPoint GridSize = RoomData->GridSize;
 	TArray<FIntPoint> ExpandedCells;
 
-	// 1. Expand all rectangular regions into individual cells
+	// 0. Apply ShapePreset if assigned (preset takes priority, then manual overrides can add to it)
+	if (ShapePreset)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Applying RoomShapePreset: %s (%s)"), 
+			*ShapePreset->ShapeName, 
+			*UEnum::GetValueAsString(ShapePreset->ShapeType));
+
+		// Expand preset's empty regions
+		for (const FForcedEmptyRegion& Region : ShapePreset->EmptyRegions)
+		{
+			int32 MinX = FMath::Min(Region.StartCell.X, Region.EndCell.X);
+			int32 MaxX = FMath::Max(Region.StartCell.X, Region.EndCell.X);
+			int32 MinY = FMath::Min(Region.StartCell.Y, Region.EndCell.Y);
+			int32 MaxY = FMath::Max(Region.StartCell.Y, Region.EndCell.Y);
+
+			MinX = FMath::Clamp(MinX, 0, GridSize.X - 1);
+			MaxX = FMath::Clamp(MaxX, 0, GridSize.X - 1);
+			MinY = FMath::Clamp(MinY, 0, GridSize.Y - 1);
+			MaxY = FMath::Clamp(MaxY, 0, GridSize.Y - 1);
+
+			for (int32 Y = MinY; Y <= MaxY; ++Y)
+			{
+				for (int32 X = MinX; X <= MaxX; ++X)
+				{
+					ExpandedCells.AddUnique(FIntPoint(X, Y));
+				}
+			}
+		}
+
+		// Add preset's empty cells
+		for (const FIntPoint& Cell : ShapePreset->EmptyCells)
+		{
+			if (Cell.X >= 0 && Cell.X < GridSize.X && Cell.Y >= 0 && Cell.Y < GridSize.Y)
+			{
+				ExpandedCells.AddUnique(Cell);
+			}
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("ShapePreset added %d empty cells"), ExpandedCells.Num());
+	}
+
+	// 1. Expand all rectangular regions into individual cells (manual overrides)
 	for (const FForcedEmptyRegion& Region : ForcedEmptyRegions)
 	{
 		// Calculate the bounding box (handles any corner order)
@@ -126,7 +168,7 @@ TArray<FIntPoint> AMasterRoom::ExpandForcedEmptyRegions() const
 		}
 	}
 
-	// 2. Add individual forced empty cells
+	// 2. Add individual forced empty cells (manual overrides)
 	for (const FIntPoint& Cell : ForcedEmptyFloorCells)
 	{
 		// Validate cell is within grid bounds
